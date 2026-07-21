@@ -1,6 +1,9 @@
 import random
+from pathlib import Path
 
 from google.cloud import storage
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def download_cs_file(bucket_name, source_blob_name, destination_file_name):
     """Downloads a blob from a GCS bucket."""
@@ -29,7 +32,9 @@ def download_droid_records(
         random.shuffle(record_names)
     selected_records = record_names[:num_records]
     for record_name in selected_records:
-        download_cs_file(bucket_name, record_name, record_name)
+        destination = PROJECT_ROOT / record_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        download_cs_file(bucket_name, record_name, str(destination))
 
 if __name__ == "__main__":
     download_droid_records(3)

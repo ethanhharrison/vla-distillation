@@ -1,6 +1,7 @@
 import tensorflow as tf
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def save_image(feature, name, output_dir):
     """Saves the first frame of a JPEG image feature to disk."""
@@ -22,9 +23,12 @@ def sample_value(feature):
             return None
     return None
 
-def get_features(dataset_folder="datasets/droid/success/", image_dir="images/"):
+def get_features(
+    dataset_folder=PROJECT_ROOT / "datasets/droid/success/",
+    image_dir=PROJECT_ROOT / "images/",
+):
     folder_path = Path(dataset_folder)
-    filenames = [dataset_folder + f.name for f in folder_path.iterdir() if f.is_file()]
+    filenames = [str(f) for f in folder_path.iterdir() if f.is_file()]
     raw_dataset = tf.data.TFRecordDataset(filenames)
     for raw_record in raw_dataset.take(1):
         example = tf.train.Example()
