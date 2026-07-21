@@ -1,4 +1,7 @@
 .venv/
 datasets/
 images/
+outputs/
 uv.lock
+.env
+*__pycache__/
