@@ -20,12 +20,49 @@ Guidelines:
 block").
 - Make the instructions meaningfully different from one another.
 - Only reference objects that are actually visible in the scene.
+- Do NOT copy, repeat, or paraphrase any of the instructions listed under \
+"Instructions to avoid" below (this includes the dataset's original task \
+instructions and anything already suggested at earlier steps). Propose \
+genuinely new tasks instead.
 - Output exactly one instruction per line, with no numbering, bullets, or extra \
-commentary."""
+commentary.
+{avoid_section}"""
 
 
-def build_prompt(step: int, total: int, num_instructions: int, template: str = INSTRUCTION_PROMPT) -> str:
-    return template.format(step=step, total=total, num_instructions=num_instructions)
+def _build_avoid_section(
+    original_instructions: list[str] | None,
+    previous_instructions: list[str] | None,
+) -> str:
+    """Render the 'Instructions to avoid' block, or '' when there's nothing."""
+    original = original_instructions or []
+    previous = previous_instructions or []
+    if not original and not previous:
+        return ""
+
+    lines = ["", "Instructions to avoid (do not copy, repeat, or rephrase these):"]
+    if original:
+        lines.append("Original dataset task instructions:")
+        lines.extend(f"- {text}" for text in original)
+    if previous:
+        lines.append("Instructions you already suggested at earlier steps:")
+        lines.extend(f"- {text}" for text in previous)
+    return "\n".join(lines)
+
+
+def build_prompt(
+    step: int,
+    total: int,
+    num_instructions: int,
+    original_instructions: list[str] | None = None,
+    previous_instructions: list[str] | None = None,
+    template: str = INSTRUCTION_PROMPT,
+) -> str:
+    return template.format(
+        step=step,
+        total=total,
+        num_instructions=num_instructions,
+        avoid_section=_build_avoid_section(original_instructions, previous_instructions),
+    )
 
 LEADING_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s*")
 

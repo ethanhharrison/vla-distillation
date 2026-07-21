@@ -76,6 +76,9 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None) -> G
     )
 
     image_dir = resolve_image_dir(config) if config.save_images else None
+    original_instructions = original_task_instructions(trajectory.metadata)
+    previous_instructions: list[str] = []
+
     for step in trajectory.steps(config.step_interval, config.max_steps):
         frame = trajectory.frame(step, config.cameras)
         images = list(frame.values())
@@ -83,9 +86,13 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None) -> G
             step=step,
             total=trajectory.length,
             num_instructions=config.num_instructions,
+            original_instructions=original_instructions,
+            previous_instructions=previous_instructions,
             template=config.prompt_template,
         )
         raw_response = vlm.generate(prompt, images)
+        step_instructions = parse_instructions(raw_response)
+
         image_paths: dict[str, str] = {}
         if image_dir is not None:
             image_paths = save_frame(frame, step, image_dir)
@@ -93,12 +100,32 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None) -> G
         result.steps.append(
             StepInstructions(
                 step=step,
-                instructions=parse_instructions(raw_response),
+                instructions=step_instructions,
                 raw_response=raw_response,
                 image_paths=image_paths,
             )
         )
+
+        for instruction in step_instructions:
+            if instruction not in previous_instructions:
+                previous_instructions.append(instruction)
+
     return result
+
+ORIGINAL_INSTRUCTION_KEYS = (
+    "language_instruction1",
+    "language_instruction2",
+    "language_instruction3",
+)
+
+def original_task_instructions(metadata: dict) -> list[str]:
+    """Deduplicated original task instructions recorded in the trajectory."""
+    instructions: list[str] = []
+    for key in ORIGINAL_INSTRUCTION_KEYS:
+        value = metadata.get(key)
+        if value and value not in instructions:
+            instructions.append(value)
+    return instructions
 
 def resolve_image_dir(config: GenerationConfig) -> Path:
     """Directory to store queried-step frames (per-record subfolder by default)."""
