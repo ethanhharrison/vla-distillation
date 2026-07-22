@@ -41,6 +41,14 @@ ORIGINAL_INSTRUCTION_KEYS = (
 )
 
 
+def _split_score(text: str) -> tuple[str, str | None]:
+    """Split an instruction line into its text and optional ' | score: N' tag."""
+    instruction, sep, score = text.partition(" | score: ")
+    if sep:
+        return instruction.strip(), score.strip()
+    return instruction.strip(), None
+
+
 def resolve_run_file(target: str) -> Path:
     """Accept a direct .txt path or a record name to look up in RUNS_DIR."""
     path = Path(target)
@@ -91,10 +99,17 @@ def parse_run(path: Path) -> dict:
             current = {
                 "step": int(stripped[len("[step ") : -1]),
                 "instructions": [],
+                "scores": [],
+                "rejected": [],
                 "images": {},
             }
         elif stripped.startswith("- ") and current is not None:
-            current["instructions"].append(stripped[2:])
+            text, score = _split_score(stripped[2:])
+            current["instructions"].append(text)
+            current["scores"].append(score)
+        elif stripped.startswith("(rejected) ") and current is not None:
+            text, score = _split_score(stripped[len("(rejected) ") :])
+            current["rejected"].append({"text": text, "score": score})
         elif stripped.startswith("(image) ") and current is not None:
             camera, _, image_path = stripped[len("(image) ") :].partition(": ")
             current["images"][camera] = image_path
@@ -117,6 +132,14 @@ def _embed_image(image_path: str) -> str:
         return f'<div class="missing">missing: {html.escape(image_path)}</div>'
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f'<img src="data:image/jpeg;base64,{encoded}" alt="{html.escape(path.name)}">'
+
+
+def _score_badge(score: str | None, rejected: bool = False) -> str:
+    """Render a small score badge, or '' when there is no score."""
+    if score is None:
+        return ""
+    cls = "badge rejected-badge" if rejected else "badge"
+    return f' <span class="{cls}">score {html.escape(str(score))}</span>'
 
 
 def render_html(run: dict, source: Path) -> str:
@@ -144,8 +167,20 @@ def render_html(run: dict, source: Path) -> str:
             f'<figure>{_embed_image(p)}<figcaption>{html.escape(cam)}</figcaption></figure>'
             for cam, p in step["images"].items()
         )
+        scores = step.get("scores") or [None] * len(step["instructions"])
         instructions = "".join(
-            f"<li>{html.escape(text)}</li>" for text in step["instructions"]
+            f"<li>{html.escape(text)}{_score_badge(score)}</li>"
+            for text, score in zip(step["instructions"], scores)
+        )
+        rejected_items = "".join(
+            f'<li>{html.escape(r["text"])}{_score_badge(r["score"], rejected=True)}</li>'
+            for r in step.get("rejected", [])
+        )
+        rejected_block = (
+            f'<details class="rejected"><summary>Rejected by judge '
+            f'({len(step["rejected"])})</summary><ul>{rejected_items}</ul></details>'
+            if step.get("rejected")
+            else ""
         )
 
         # Reconstruct the exact system prompt sent at this step: the avoid list
@@ -163,6 +198,7 @@ def render_html(run: dict, source: Path) -> str:
               <h3>Step {step['step']}</h3>
               <div class="frames">{images or '<em>no images saved</em>'}</div>
               <ol class="instructions">{instructions}</ol>
+              {rejected_block}
               <details class="prompt">
                 <summary>System prompt used at this step
                   ({len(previous_instructions)} prior instruction(s) to avoid)</summary>
@@ -207,6 +243,13 @@ def render_html(run: dict, source: Path) -> str:
   figure img {{ width: 260px; height: auto; border-radius: 6px; display: block; }}
   figcaption {{ font-size: 12px; color: #888; text-align: center; margin-top: 4px; }}
   .instructions li {{ margin: 4px 0; }}
+  .badge {{ display: inline-block; font-size: 11px; font-weight: 600;
+           background: #2e7d3222; color: #2e7d32; border-radius: 6px;
+           padding: 1px 6px; margin-left: 6px; vertical-align: middle; }}
+  .rejected-badge {{ background: #c6282822; color: #c62828; }}
+  details.rejected {{ margin: 6px 0 8px; }}
+  details.rejected summary {{ cursor: pointer; color: #c62828; font-size: 13px; }}
+  details.rejected li {{ color: #888; text-decoration: line-through; }}
   details.prompt {{ margin-top: 8px; }}
   details.prompt summary {{ cursor: pointer; color: #888; font-size: 13px; }}
   .missing {{ width: 260px; height: 146px; display: flex; align-items: center;

@@ -20,7 +20,7 @@ from google.genai import types
 # Default model per provider; override with `build_vlm(..., model=...)`.
 DEFAULT_MODELS = {
     "openai": "gpt-4o",
-    "gemini": "gemini-3.5-flash",
+    "gemini": "gemini-3.6-flash",
     "dummy": "dummy",
 }
 

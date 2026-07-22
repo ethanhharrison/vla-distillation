@@ -23,7 +23,8 @@ try:
 except ImportError:
     pass
 
-from .prompts import INSTRUCTION_PROMPT, build_prompt, parse_instructions
+from .filter import ScoredInstruction, build_judge, score_instructions
+from .prompts import INSTRUCTION_PROMPT, JUDGE_PROMPT, build_prompt, parse_instructions
 from .trajectory import DEFAULT_CAMERAS, Trajectory, load_trajectory
 from .vlm import VLM, available_providers, build_vlm
 
@@ -45,6 +46,11 @@ class GenerationConfig:
     example_index: int = 0
     save_images: bool = False
     image_dir: Path | None = None
+    judge: bool = False
+    judge_provider: str | None = None
+    judge_model: str | None = None
+    judge_threshold: int = 3
+    judge_prompt_template: str = JUDGE_PROMPT
 
 @dataclass
 class StepInstructions:
@@ -53,6 +59,8 @@ class StepInstructions:
     instructions: list[str]
     raw_response: str = ""
     image_paths: dict[str, str] = field(default_factory=dict)
+    scored: list[ScoredInstruction] = field(default_factory=list)
+    judge_raw_response: str = ""
 
 @dataclass
 class GenerationResult:
@@ -61,13 +69,15 @@ class GenerationResult:
     metadata: dict
     steps: list[StepInstructions] = field(default_factory=list)
 
-def generate_instructions(config: GenerationConfig, vlm: VLM | None = None) -> GenerationResult:
+def generate_instructions(config: GenerationConfig, vlm: VLM | None = None, judge: VLM | None = None) -> GenerationResult:
     """Run the generation pipeline for one trajectory."""
     trajectory: Trajectory = load_trajectory(
         config.record_path, config.cameras, config.example_index
     )
     if vlm is None:
         vlm = build_vlm(config.provider, model=config.model)
+    if config.judge and judge is None:
+        judge = build_judge(config.judge_provider or config.provider, config.judge_model)
 
     result = GenerationResult(
         config=config,
@@ -91,7 +101,23 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None) -> G
             template=config.prompt_template,
         )
         raw_response = vlm.generate(prompt, images)
-        step_instructions = parse_instructions(raw_response)
+        proposed_instructions = parse_instructions(raw_response)
+
+        scored: list[ScoredInstruction] = []
+        judge_raw = ""
+        if config.judge and judge is not None and proposed_instructions:
+            accepted_instructions, scored, judge_raw = score_instructions(
+                judge=judge,
+                generation_prompt=prompt,
+                images=images,
+                instructions=proposed_instructions,
+                step=step,
+                total=trajectory.length,
+                threshold=config.judge_threshold,
+                template=config.judge_prompt_template,
+            )
+        else:
+            accepted_instructions = proposed_instructions
 
         image_paths: dict[str, str] = {}
         if image_dir is not None:
@@ -100,13 +126,15 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None) -> G
         result.steps.append(
             StepInstructions(
                 step=step,
-                instructions=step_instructions,
+                instructions=accepted_instructions,
                 raw_response=raw_response,
                 image_paths=image_paths,
+                scored=scored,
+                judge_raw_response=judge_raw,
             )
         )
 
-        for instruction in step_instructions:
+        for instruction in accepted_instructions:
             if instruction not in previous_instructions:
                 previous_instructions.append(instruction)
 
@@ -151,7 +179,7 @@ def resolve_output_path(config: GenerationConfig, vlm: VLM) -> Path:
     filename = f"{stem}_{config.provider}_{timestamp}.txt"
     return DEFAULT_OUTPUT_DIR / filename
 
-def write_txt(result: GenerationResult, vlm: VLM, output_path: Path) -> Path:
+def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM | None = None) -> Path:
     """Write a human-readable summary of the generated instructions."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     config = result.config
@@ -164,6 +192,12 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path) -> Path:
         f"cameras: {', '.join(config.cameras)}",
         f"trajectory_length: {result.trajectory_length}",
     ]
+    if config.judge:
+        judge_provider = config.judge_provider or config.provider
+        judge_model = judge.model if judge is not None else (config.judge_model or "?")
+        lines.append(f"judge_provider: {judge_provider}")
+        lines.append(f"judge_model: {judge_model}")
+        lines.append(f"judge_threshold: {config.judge_threshold}")
     if result.metadata:
         lines.append("metadata:")
         for key, value in result.metadata.items():
@@ -172,8 +206,15 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path) -> Path:
 
     for step_result in result.steps:
         lines.append(f"[step {step_result.step}]")
+        scores = {s.instruction: s.score for s in step_result.scored}
         for instruction in step_result.instructions:
-            lines.append(f"  - {instruction}")
+            score = scores.get(instruction)
+            suffix = f" | score: {score}" if score is not None else ""
+            lines.append(f"  - {instruction}{suffix}")
+        for scored in step_result.scored:
+            if not scored.accepted:
+                score = scored.score if scored.score is not None else "?"
+                lines.append(f"  (rejected) {scored.instruction} | score: {score}")
         for camera, path in step_result.image_paths.items():
             lines.append(f"  (image) {camera}: {path}")
         lines.append("")
@@ -194,6 +235,10 @@ def build_config_from_args(args: argparse.Namespace) -> GenerationConfig:
         example_index=args.example_index,
         save_images=args.save_images,
         image_dir=Path(args.image_dir) if args.image_dir else None,
+        judge=args.judge,
+        judge_provider=args.judge_provider,
+        judge_model=args.judge_model,
+        judge_threshold=args.judge_threshold,
     )
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -255,20 +300,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Where to save queried-step frames "
         "(defaults to outputs/language_instruction_images/<record>/).",
     )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help="Score each candidate with a VLM judge and drop low-scoring ones.",
+    )
+    parser.add_argument(
+        "--judge-provider",
+        default=None,
+        help="VLM provider for the judge (defaults to --provider). "
+        f"Available: {', '.join(available_providers())}.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="Model name for the judge (defaults to the judge provider's default).",
+    )
+    parser.add_argument(
+        "--judge-threshold",
+        type=int,
+        default=3,
+        help="Minimum judge score (1-5) required to keep an instruction.",
+    )
     return parser.parse_args(argv)
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     config = build_config_from_args(args)
     vlm = build_vlm(config.provider, model=config.model)
-    print(f"Generating instructions with {vlm} ...")
-    result = generate_instructions(config, vlm=vlm)
+    judge = build_judge(config.judge_provider or config.provider, config.judge_model) if config.judge else None
+    if judge is not None:
+        print(f"Generating instructions with {vlm}, judging with {judge} ...")
+    else:
+        print(f"Generating instructions with {vlm} ...")
+    result = generate_instructions(config, vlm=vlm, judge=judge)
     output_path = resolve_output_path(config, vlm)
-    write_txt(result, vlm, output_path)
+    write_txt(result, vlm, output_path, judge=judge)
+    num_accepted = sum(len(s.instructions) for s in result.steps)
     print(
-        f"Wrote {sum(len(s.instructions) for s in result.steps)} instructions "
+        f"Wrote {num_accepted} instructions "
         f"across {len(result.steps)} steps to {output_path}"
     )
+    if judge is not None:
+        num_proposed = sum(len(s.scored) for s in result.steps)
+        num_rejected = num_proposed - num_accepted
+        print(
+            f"Judge kept {num_accepted}/{num_proposed} candidates "
+            f"(threshold {config.judge_threshold}); dropped {num_rejected}."
+        )
     if config.save_images:
         num_images = sum(len(s.image_paths) for s in result.steps)
         print(f"Saved {num_images} step images to {resolve_image_dir(config)}")
