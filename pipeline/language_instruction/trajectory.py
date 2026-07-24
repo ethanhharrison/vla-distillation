@@ -1,15 +1,10 @@
-"""Load DROID tfrecords and expose per-step camera frames.
-
-A DROID tfrecord stores each episode as a single `tf.train.Example`. The image
-features (`shoulder_image_1`, `shoulder_image_2`, `wrist_image`) are stored as a
-`bytes_list` with one JPEG per timestep, so `images[camera][step]` is the raw
-JPEG bytes for that camera at that step.
-"""
+"""Load DROID tfrecords and expose per-step camera frames."""
 
 from __future__ import annotations
+
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 import tensorflow as tf
 

@@ -10,9 +10,11 @@ from .generate import (
     GenerationConfig,
     GenerationResult,
     StepInstructions,
+    build_run_cost,
     generate_instructions,
     write_txt,
 )
+from .pricing import CostEstimate, RunCost, Usage, estimate_cost
 from .trajectory import Trajectory, load_trajectory, load_trajectories
 from .vlm import VLM, available_providers, build_vlm, register_vlm
 
@@ -22,9 +24,14 @@ __all__ = [
     "ScoredInstruction",
     "StepInstructions",
     "build_judge",
+    "build_run_cost",
     "generate_instructions",
     "score_instructions",
     "write_txt",
+    "CostEstimate",
+    "RunCost",
+    "Usage",
+    "estimate_cost",
     "Trajectory",
     "load_trajectory",
     "load_trajectories",

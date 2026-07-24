@@ -1,13 +1,4 @@
-"""Generate candidate language instructions for a DROID trajectory.
-
-Walks a tfrecord's trajectory at a configurable step interval, sends the camera
-frame(s) at each sampled step to a (swappable) VLM, and writes the proposed
-instructions to a text file.
-
-The in-memory result is returned as structured `StepInstructions`, so a future
-verification pass can consume `(step, instructions)` pairs directly without
-re-parsing the text output.
-"""
+"""Generate candidate language instructions for a DROID trajectory."""
 
 from __future__ import annotations
 
@@ -24,6 +15,7 @@ except ImportError:
     pass
 
 from .filter import ScoredInstruction, build_judge, score_instructions
+from .pricing import RunCost, estimate_cost
 from .prompts import INSTRUCTION_PROMPT, JUDGE_PROMPT, build_prompt, parse_instructions
 from .trajectory import DEFAULT_CAMERAS, Trajectory, load_trajectory
 from .vlm import VLM, available_providers, build_vlm
@@ -51,6 +43,7 @@ class GenerationConfig:
     judge_model: str | None = None
     judge_threshold: int = 3
     judge_prompt_template: str = JUDGE_PROMPT
+    estimate_cost: bool = False
 
 @dataclass
 class StepInstructions:
@@ -171,11 +164,41 @@ def save_frame(frame: dict[str, bytes], step: int, image_dir: Path) -> dict[str,
         saved[camera] = str(path)
     return saved
 
+def build_run_cost(result: GenerationResult, vlm: VLM, judge: VLM | None = None) -> RunCost:
+    """Estimate the run's cost from the accumulated VLM/judge token usage."""
+    generation = estimate_cost(vlm.model, vlm.usage)
+    judge_cost = estimate_cost(judge.model, judge.usage) if judge is not None else None
+    return RunCost(
+        generation=generation,
+        judge=judge_cost,
+        num_steps=len(result.steps),
+    )
+
+def _fmt_usd(value: float | None) -> str:
+    return f"{value:.6f}" if value is not None else "unknown"
+
+def cost_report_lines(run_cost: RunCost) -> list[str]:
+    """Header lines describing the estimated cost (parsed back by the viewers)."""
+    gen = run_cost.generation
+    lines = [
+        f"generation_input_tokens: {gen.usage.input_tokens}",
+        f"generation_output_tokens: {gen.usage.output_tokens}",
+        f"generation_cost_usd: {_fmt_usd(gen.total)}",
+    ]
+    if run_cost.judge is not None:
+        judge = run_cost.judge
+        lines.append(f"judge_input_tokens: {judge.usage.input_tokens}")
+        lines.append(f"judge_output_tokens: {judge.usage.output_tokens}")
+        lines.append(f"judge_cost_usd: {_fmt_usd(judge.total)}")
+    lines.append(f"estimated_cost_total_usd: {_fmt_usd(run_cost.total)}")
+    lines.append(f"estimated_cost_per_step_usd: {_fmt_usd(run_cost.per_step)}")
+    return lines
+
 def resolve_output_path(config: GenerationConfig, vlm: VLM) -> Path:
     if config.output_path is not None:
         return Path(config.output_path)
     stem = Path(config.record_path).stem
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
     filename = f"{stem}_{config.provider}_{timestamp}.txt"
     return DEFAULT_OUTPUT_DIR / filename
 
@@ -198,6 +221,8 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
         lines.append(f"judge_provider: {judge_provider}")
         lines.append(f"judge_model: {judge_model}")
         lines.append(f"judge_threshold: {config.judge_threshold}")
+    if config.estimate_cost:
+        lines.extend(cost_report_lines(build_run_cost(result, vlm, judge)))
     if result.metadata:
         lines.append("metadata:")
         for key, value in result.metadata.items():
@@ -239,6 +264,7 @@ def build_config_from_args(args: argparse.Namespace) -> GenerationConfig:
         judge_provider=args.judge_provider,
         judge_model=args.judge_model,
         judge_threshold=args.judge_threshold,
+        estimate_cost=args.estimate_cost,
     )
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -322,6 +348,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=3,
         help="Minimum judge score (1-5) required to keep an instruction.",
     )
+    parser.add_argument(
+        "--estimate-cost",
+        action="store_true",
+        help="Estimate the approximate USD cost from token usage (generation "
+        "plus judge) and record it (total and per-step) in the run file.",
+    )
     return parser.parse_args(argv)
 
 def main(argv: list[str] | None = None) -> None:
@@ -347,6 +379,12 @@ def main(argv: list[str] | None = None) -> None:
         print(
             f"Judge kept {num_accepted}/{num_proposed} candidates "
             f"(threshold {config.judge_threshold}); dropped {num_rejected}."
+        )
+    if config.estimate_cost:
+        run_cost = build_run_cost(result, vlm, judge)
+        print(
+            f"Estimated cost: ${_fmt_usd(run_cost.total)} total "
+            f"(${_fmt_usd(run_cost.per_step)} per step across {len(result.steps)} steps)"
         )
     if config.save_images:
         num_images = sum(len(s.image_paths) for s in result.steps)

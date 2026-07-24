@@ -1,10 +1,4 @@
-"""VLM-judge filtering for candidate language instructions.
-
-After the generator proposes instructions for a step, an optional (possibly
-different) VLM "judge" scores each candidate 1-5 for how well it adheres to the
-generation prompt (feasible in the scene, references only visible objects,
-genuinely new). Candidates scoring below a threshold are dropped.
-"""
+"""VLM-judge filtering for candidate language instructions."""
 
 from __future__ import annotations
 
@@ -37,12 +31,7 @@ def score_instructions(
     threshold: int,
     template: str = JUDGE_PROMPT,
 ) -> tuple[list[str], list[ScoredInstruction], str]:
-    """Score candidates with the judge and split them by the threshold.
-
-    Returns `(accepted, scored, raw_response)`. A candidate whose score cannot
-    be parsed is kept (score `None`, accepted) so a flaky judge response never
-    silently discards otherwise-valid instructions.
-    """
+    """Score candidates with the judge and split them by the threshold."""
     judge_prompt = build_judge_prompt(
         generation_prompt=generation_prompt,
         instructions=instructions,

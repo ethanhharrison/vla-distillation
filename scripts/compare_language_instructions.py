@@ -1,16 +1,4 @@
-"""Side-by-side comparison of multiple instruction-generation runs.
-
-Given two or more run files produced by `pipeline.language_instruction.generate`
-(typically the same record generated with different VLMs), this renders a single
-HTML report that aligns the runs by trajectory step: each step shows the camera
-frame(s) once, followed by one column per run listing that run's instructions.
-
-Usage:
-    uv run python scripts/compare_language_instructions.py <run1.txt> <run2.txt> [...] [--open]
-
-Each argument may be a path to a generated `.txt` run file or a record name to
-look up in outputs/language_instructions/.
-"""
+"""Side-by-side comparison of multiple instruction-generation runs."""
 
 from __future__ import annotations
 
@@ -24,9 +12,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from summarize_language_instructions import (  # noqa: E402
+from summarize_language_instructions import (
     DEFAULT_VIZ_DIR,
     _embed_image,
+    _fmt_cost,
     parse_run,
     resolve_run_file,
 )
@@ -59,6 +48,10 @@ def render_html(runs: list[dict]) -> str:
 
     labels = [run["label"] for run in runs]
     header_cells = "".join(f"<div class='mhead'>{html.escape(l)}</div>" for l in labels)
+
+    any_cost = any(
+        run["info"].get("estimated_cost_per_step_usd") is not None for run in runs
+    )
 
     step_blocks = []
     for step_num in all_steps:
@@ -99,10 +92,16 @@ def render_html(runs: list[dict]) -> str:
             """
         )
 
+    cost_header = "<th>cost / step</th>" if any_cost else ""
     models_table = "".join(
         f"<tr><th>{html.escape(run['label'])}</th>"
         f"<td>{html.escape(run['info'].get('provider', '?'))}</td>"
-        f"<td>{html.escape(str(run['source']))}</td></tr>"
+        + (
+            f"<td>{_fmt_cost(run['info'].get('estimated_cost_per_step_usd'))}</td>"
+            if any_cost
+            else ""
+        )
+        + f"<td>{html.escape(str(run['source']))}</td></tr>"
         for run in runs
     )
 
@@ -145,7 +144,11 @@ def render_html(runs: list[dict]) -> str:
 
   <div class="card">
     <h2>Models compared</h2>
-    <table>{models_table}</table>
+    <table>
+      <tr><th>model</th><th>provider</th>{cost_header}<th>source</th></tr>
+      {models_table}
+    </table>
+    {'<p class="subtitle">Cost per step = total run cost / number of generation steps. Approximate; runs without a recorded cost estimate show &ldquo;unknown&rdquo;.</p>' if any_cost else ''}
   </div>
 
   <div class="card">
@@ -158,7 +161,7 @@ def render_html(runs: list[dict]) -> str:
   <footer class="subtitle">Rendered {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</footer>
 </body>
 </html>
-"""
+"""  # noqa: DTZ005
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -186,7 +189,7 @@ def main(argv: list[str] | None = None) -> None:
         output_path = Path(args.output)
     else:
         record_stem = Path(runs[0]["info"].get("record", "comparison")).stem
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
         output_path = DEFAULT_VIZ_DIR / f"{record_stem}_comparison_{timestamp}.html"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_html(runs))

@@ -18,6 +18,7 @@ vla-distillation/
 │       ├── trajectory.py       # decode a TFRecord into per-step camera frames
 │       ├── vlm.py              # swappable VLM backends (OpenAI / Gemini / Dummy)
 │       ├── prompts.py          # prompt template + response parsing
+│       ├── pricing.py          # token accounting + approximate USD cost estimation
 │       └── generate.py         # orchestration + CLI
 ├── datasets/                   # downloaded TFRecords (git-ignored)
 └── outputs/                    # generated instructions + saved frames (git-ignored)
@@ -130,6 +131,11 @@ This writes a text file to `outputs/language_instructions/` and (with
 | `--output`            | auto-named          | Output `.txt` path.                                                |
 | `--save-images`       | off                 | Save the camera frame(s) at each queried step.                    |
 | `--image-dir`         | auto (per record)   | Where to save queried-step frames.                                 |
+| `--judge`             | off                 | Score candidates with a VLM judge and drop low-scoring ones.       |
+| `--judge-provider`    | `--provider`        | VLM backend for the judge.                                         |
+| `--judge-model`       | provider default    | Model name for the judge.                                          |
+| `--judge-threshold`   | `3`                 | Minimum judge score (1-5) required to keep an instruction.         |
+| `--estimate-cost`     | off                 | Estimate the run's approximate USD cost from token usage.          |
 
 The two most important knobs:
 
@@ -157,6 +163,50 @@ step_interval: 25
   (image) shoulder_image_1: outputs/language_instruction_images/success-00188/step0000_shoulder_image_1.jpeg
   ...
 ```
+
+## Estimating cost
+
+Pass `--estimate-cost` to record an approximate USD cost for the run (works with
+or without `--judge`):
+
+```bash
+uv run python -m pipeline.language_instruction.generate \
+  datasets/droid/success/success-00285.tfrecord \
+  --provider gemini --judge --estimate-cost
+```
+
+The generator accumulates the input/output token counts reported by each API
+call (image tokens are already included in the input counts) and multiplies them
+by the per-model prices in `pipeline/language_instruction/pricing.py`. Both the
+generation model and, when enabled, the judge model are counted. The headline
+metric is **cost per step** — the total run cost divided by the number of
+trajectory steps at which we asked for a new set of instructions:
+
+```
+cost per step = total cost / number of generation steps
+```
+
+These fields are written into the run `.txt` header:
+
+```
+generation_cost_usd: 0.004120
+judge_cost_usd: 0.002980
+estimated_cost_total_usd: 0.007100
+estimated_cost_per_step_usd: 0.000394
+```
+
+Prices are approximate list prices and drift over time — edit `MODEL_PRICING`
+in `pricing.py` (USD per 1M tokens, `(input, output)`) to keep them current. A
+model with no pricing entry (or the offline `dummy`/local `hf` backends) reports
+an "unknown" cost rather than a wrong one.
+
+The two viewer scripts surface these numbers automatically:
+
+- `summarize_language_instructions.py` renders an **Estimated cost** card.
+- `compare_language_instructions.py` adds a **cost / step** column to the models
+  table, making it easy to weigh quality against price when comparing models.
+
+Runs generated without `--estimate-cost` simply omit the cost display.
 
 ## Choosing / adding a VLM backend
 

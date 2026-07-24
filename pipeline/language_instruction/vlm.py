@@ -1,27 +1,22 @@
-"""Swappable Vision-Language-Model backends.
-
-Every backend implements the same `VLM.generate(prompt, images)` interface, so
-the pipeline is agnostic to which provider is used. Add a new provider by
-subclassing `VLM` and decorating it with `@register_vlm("name")`; it then
-becomes selectable via `build_vlm("name", ...)`.
-"""
+"""Swappable Vision-Language-Model backends."""
 
 from __future__ import annotations
 
 import base64
+import io
 import os
 from abc import ABC, abstractmethod
-from typing import Callable, Type
-
-from openai import OpenAI
-from google import genai
-from google.genai import types
+from collections.abc import Callable
 
 # Local HuggingFace VLM deps (run "uv pip install 'transformers>=4.57' torch torchvision accelerate pillow" to use, or comment out if not using)
 import torch
-from transformers import AutoModelForImageTextToText, AutoProcessor
-import io
+from google import genai
+from google.genai import types
+from openai import OpenAI
 from PIL import Image
+from transformers import AutoModelForImageTextToText, AutoProcessor
+
+from .pricing import Usage
 
 # Default model per provider; override with `build_vlm(..., model=...)`.
 DEFAULT_MODELS = {
@@ -31,13 +26,14 @@ DEFAULT_MODELS = {
     "dummy": "dummy",
 }
 
-MODEL_REGISTRY: dict[str, Type[VLM]] = {}
+MODEL_REGISTRY: dict[str, type[VLM]] = {}
 
 class VLM(ABC):
     """Common interface for a vision-language model backend."""
 
     def __init__(self, model: str):
         self.model = model
+        self.usage = Usage()
 
     @abstractmethod
     def generate(self, prompt: str, images: list[bytes]) -> str:
@@ -47,9 +43,9 @@ class VLM(ABC):
         return f"{type(self).__name__}(model={self.model!r})"
 
 
-def register_vlm(name: str) -> Callable[[Type[VLM]], Type[VLM]]:
+def register_vlm(name: str) -> Callable[[type[VLM]], type[VLM]]:
     """Class decorator that registers a VLM backend under `name`."""
-    def decorator(cls: Type[VLM]) -> Type[VLM]:
+    def decorator(cls: type[VLM]) -> type[VLM]:
         MODEL_REGISTRY[name.lower()] = cls
         return cls
     return decorator
@@ -89,6 +85,11 @@ class OpenAIVLM(VLM):
             messages=[{"role": "user", "content": content}],
             **self.extra,
         )
+        usage = response.usage
+        self.usage.add(
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+        )
         return response.choices[0].message.content or ""
 
 @register_vlm("gemini")
@@ -109,6 +110,11 @@ class GeminiVLM(VLM):
             model=self.model,
             contents=parts,
             **self.extra,
+        )
+        meta = response.usage_metadata
+        self.usage.add(
+            input_tokens=meta.prompt_token_count if meta else 0,
+            output_tokens=meta.candidates_token_count if meta else 0,
         )
         return response.text or ""
 
@@ -149,6 +155,10 @@ class HuggingFaceVLM(VLM):
         with torch.no_grad():
             generated = self.hf_model.generate(**inputs, max_new_tokens=self.max_new_tokens, **self.extra)
         trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated)]
+        self.usage.add(
+            input_tokens=int(inputs.input_ids.shape[-1]),
+            output_tokens=int(trimmed[0].shape[-1]),
+        )
         return self.processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
 @register_vlm("dummy")
@@ -156,10 +166,5 @@ class DummyVLM(VLM):
     """Offline backend for testing the pipeline without any API calls."""
 
     def generate(self, prompt: str, images: list[bytes]) -> str:
-        return "\n".join(
-            [
-                "Pick up the object on the table",
-                "Move the arm toward the target",
-                "Place the item at the goal location",
-            ]
-        )
+        self.usage.add()
+        return "Pick up the object on the table\nMove the arm toward the target\nPlace the item at the goal location"

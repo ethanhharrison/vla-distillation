@@ -1,17 +1,4 @@
-"""Visualize VLM-generated language instructions for a record's trajectory.
-
-Reads an output file produced by `pipeline.language_instruction.generate` and
-renders a self-contained HTML report showing, at every queried step, the camera
-frame(s) alongside the instructions the VLM proposed. The report header also
-lists the task's original instructions, the VLM used, and the system prompt.
-
-Usage:
-    uv run python scripts/summarize_language_instructions.py <run.txt | record-name> [--open]
-
-You can pass either the path to a generated `.txt` run file, or just a record
-name (e.g. `success-00188`), in which case the most recent matching run in
-outputs/language_instructions/ is used.
-"""
+"""Visualize VLM-generated language instructions for a record's trajectory."""
 
 from __future__ import annotations
 
@@ -26,7 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.language_instruction.prompts import (  # noqa: E402
+from pipeline.language_instruction.prompts import (
     INSTRUCTION_PROMPT,
     build_prompt,
 )
@@ -140,6 +127,43 @@ def _score_badge(score: str | None, rejected: bool = False) -> str:
         return ""
     cls = "badge rejected-badge" if rejected else "badge"
     return f' <span class="{cls}">score {html.escape(str(score))}</span>'
+
+
+def _fmt_cost(value: str | None) -> str:
+    """Format a recorded USD cost string as e.g. '$0.001234' (or 'unknown')."""
+    if value is None:
+        return "unknown"
+    try:
+        return f"${float(value):.6f}"
+    except ValueError:
+        return html.escape(value)
+
+
+def cost_card(info: dict) -> str:
+    """Render the estimated-cost card, or '' when the run recorded no cost."""
+    per_step = info.get("estimated_cost_per_step_usd")
+    total = info.get("estimated_cost_total_usd")
+    if per_step is None and total is None:
+        return ""
+    rows = [
+        ("Cost per step", _fmt_cost(per_step)),
+        ("Total cost", _fmt_cost(total)),
+    ]
+    for label, key in (
+        ("Generation", "generation_cost_usd"),
+        ("Judge", "judge_cost_usd"),
+    ):
+        if key in info:
+            rows.append((label, _fmt_cost(info.get(key))))
+    body = "".join(
+        f"<tr><th>{html.escape(label)}</th><td>{value}</td></tr>" for label, value in rows
+    )
+    return f"""
+  <div class="card">
+    <h2>Estimated cost</h2>
+    <table>{body}</table>
+    <p class="subtitle">Per-step = total cost / number of generation steps. Approximate; based on recorded token usage.</p>
+  </div>"""
 
 
 def render_html(run: dict, source: Path) -> str:
@@ -266,7 +290,7 @@ def render_html(run: dict, source: Path) -> str:
     <h2>Run configuration</h2>
     <table>{meta_rows}</table>
   </div>
-
+{cost_card(info)}
   <div class="card">
     <h2>Original task instructions</h2>
     <ul class="original">{original_items}</ul>
@@ -290,7 +314,7 @@ def render_html(run: dict, source: Path) -> str:
   </footer>
 </body>
 </html>
-"""
+"""  # noqa: DTZ005
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
