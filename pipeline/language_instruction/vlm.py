@@ -19,7 +19,7 @@ from google.genai import types
 
 # Default model per provider; override with `build_vlm(..., model=...)`.
 DEFAULT_MODELS = {
-    "openai": "gpt-4o",
+    "openai": "gpt-5.6-sol",
     "gemini": "gemini-3.6-flash",
     "dummy": "dummy",
 }
@@ -60,7 +60,7 @@ def build_vlm(provider: str, model: str | None = None, **kwargs) -> VLM:
 
 @register_vlm("openai")
 class OpenAIVLM(VLM):
-    """OpenAI chat-completions backend (GPT-4o and friends)."""
+    """OpenAI chat-completions backend"""
 
     def __init__(self, model: str, api_key: str | None = None, **kwargs):
         super().__init__(model)
