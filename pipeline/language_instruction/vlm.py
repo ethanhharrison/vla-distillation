@@ -17,7 +17,7 @@ from openai import OpenAI
 from google import genai
 from google.genai import types
 
-# Qwen dependencies (run "uv pip install 'transformers>=4.57' torch torchvision accelerate pillow" to use or comment out if not using)
+# Local HuggingFace VLM deps (run "uv pip install 'transformers>=4.57' torch torchvision accelerate pillow" to use, or comment out if not using)
 import torch
 from transformers import AutoModelForImageTextToText, AutoProcessor
 import io
@@ -27,7 +27,7 @@ from PIL import Image
 DEFAULT_MODELS = {
     "openai": "gpt-5.6-sol",
     "gemini": "gemini-3.6-flash",
-    "qwen": "Qwen/Qwen3-VL-4B-Instruct",
+    "hf": "Qwen/Qwen3-VL-4B-Instruct",
     "dummy": "dummy",
 }
 
@@ -112,9 +112,9 @@ class GeminiVLM(VLM):
         )
         return response.text or ""
 
-@register_vlm("qwen")
-class QwenVLM(VLM):
-    """Local Qwen3-VL backend running from downloaded weights via `transformers`"""
+@register_vlm("hf")
+class HuggingFaceVLM(VLM):
+    """Local image-text-to-text backend running downloaded weights via `transformers`."""
 
     def __init__(
         self,
