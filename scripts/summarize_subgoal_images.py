@@ -251,7 +251,7 @@ def render_html(results: dict, img_dir: Path, source_path: Path) -> str:
   {''.join(example_sections)}
   <footer class="subtitle">Rendered from {html.escape(str(source_path))} on
     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</footer>
-</body></html>"""
+</body></html>"""  # noqa: DTZ005
 
 
 def parse_args(argv=None):

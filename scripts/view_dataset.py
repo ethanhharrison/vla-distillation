@@ -1,5 +1,6 @@
-import tensorflow as tf
 from pathlib import Path
+
+import tensorflow as tf
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 

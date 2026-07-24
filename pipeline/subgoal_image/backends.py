@@ -24,9 +24,13 @@ import base64
 import io
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Type
 
+from google import genai
+from google.genai import types
+from openai import OpenAI
+from PIL import Image, ImageDraw
 
 # --------------------------------------------------------------------------- #
 # price tables (per-image USD estimates; hosted image models bill by token so
@@ -87,11 +91,11 @@ class ImageEditBackend(ABC):
         raise NotImplementedError
 
 
-_REGISTRY: dict[str, Type[ImageEditBackend]] = {}
+_REGISTRY: dict[str, type[ImageEditBackend]] = {}
 
 
-def register_image_backend(name: str) -> Callable[[Type[ImageEditBackend]], Type[ImageEditBackend]]:
-    def deco(cls: Type[ImageEditBackend]) -> Type[ImageEditBackend]:
+def register_image_backend(name: str) -> Callable[[type[ImageEditBackend]], type[ImageEditBackend]]:
+    def deco(cls: type[ImageEditBackend]) -> type[ImageEditBackend]:
         cls.name = name
         _REGISTRY[name.lower()] = cls
         return cls
@@ -148,8 +152,6 @@ class DummyImageBackend(ImageEditBackend):
     default_model = "dummy"
 
     def edit(self, req: SubgoalRequest) -> SubgoalResult:
-        from PIL import Image, ImageDraw
-
         im = Image.open(io.BytesIO(req.source_bytes)).convert("RGB")
         # deterministic, visible change so phash delta is non-zero and the
         # contact sheet obviously shows a "subgoal": green wash + corner label.
@@ -186,8 +188,6 @@ class GeminiImageBackend(ImageEditBackend):
 
     def _get_client(self):
         if self._client is None:
-            from google import genai
-
             self._client = genai.Client(api_key=self._api_key)
         return self._client
 
@@ -195,8 +195,6 @@ class GeminiImageBackend(ImageEditBackend):
         return GEMINI_PRICES.get(self.model, _FALLBACK_PRICE)
 
     def edit(self, req: SubgoalRequest) -> SubgoalResult:
-        from google.genai import types
-
         client = self._get_client()
         try:
             resp = client.models.generate_content(
@@ -207,7 +205,7 @@ class GeminiImageBackend(ImageEditBackend):
                 ],
                 config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
             )
-        except Exception as e:  # network / API / quota errors surfaced honestly
+        except Exception as e:  # network / API / quota errors surfaced honestly  # noqa: BLE001
             return SubgoalResult(None, "png", self.model, "edited",
                                  self.estimate_cost(), error=f"{type(e).__name__}: {e}")
 
@@ -259,8 +257,6 @@ class OpenAIImageBackend(ImageEditBackend):
 
     def _get_client(self):
         if self._client is None:
-            from openai import OpenAI
-
             self._client = OpenAI(api_key=self._api_key)
         return self._client
 
@@ -272,21 +268,21 @@ class OpenAIImageBackend(ImageEditBackend):
 
     def edit(self, req: SubgoalRequest) -> SubgoalResult:
         client = self._get_client()
-        kwargs = dict(
-            model=self.model,
-            image=("source.jpg", req.source_bytes, "image/jpeg"),
-            prompt=req.prompt,
-            size=self.size,
-            quality=self.quality,
-            output_format="png",
-            n=1,
-        )
+        kwargs = {
+            "model": self.model,
+            "image": ("source.jpg", req.source_bytes, "image/jpeg"),
+            "prompt": req.prompt,
+            "size": self.size,
+            "quality": self.quality,
+            "output_format": "png",
+            "n": 1,
+        }
         # input_fidelity is unsupported on the -mini model.
         if "mini" not in self.model:
             kwargs["input_fidelity"] = self.input_fidelity
         try:
             resp = client.images.edit(**kwargs)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return SubgoalResult(None, "png", self.model, "edited",
                                  self.estimate_cost(), error=f"{type(e).__name__}: {e}")
 

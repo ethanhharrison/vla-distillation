@@ -57,7 +57,7 @@ def dhash(image_bytes: bytes, hash_size: int = 8) -> int:
 
 
 def hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
+    return (a ^ b).bit_count()
 
 
 def phash_delta(src_bytes: bytes, dst_bytes: bytes, hash_size: int = 8) -> dict:

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -100,7 +100,7 @@ def generate_subgoals(config: SubgoalConfig) -> SubgoalRun:
     cameras = config.cameras or meta.get("cameras")
 
     out = Path(config.output_dir) if config.output_dir else (
-        DEFAULT_OUTPUT_DIR / f"run_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        DEFAULT_OUTPUT_DIR / f"run_{datetime.now().strftime('%Y%m%d-%H%M%S')}"  # noqa: DTZ005
     )
     img_out = out / "images"
     img_out.mkdir(parents=True, exist_ok=True)

@@ -7,12 +7,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
+from dotenv import load_dotenv
 
-    load_dotenv()
-except ImportError:
-    pass
+load_dotenv()
 
 from .filter import ScoredInstruction, build_judge, score_instructions
 from .pricing import RunCost, estimate_cost
