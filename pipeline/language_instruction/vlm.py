@@ -17,10 +17,17 @@ from openai import OpenAI
 from google import genai
 from google.genai import types
 
+# Qwen dependencies (run "uv pip install 'transformers>=4.57' torch torchvision accelerate pillow" to use or comment out if not using)
+import torch
+from transformers import AutoModelForImageTextToText, AutoProcessor
+import io
+from PIL import Image
+
 # Default model per provider; override with `build_vlm(..., model=...)`.
 DEFAULT_MODELS = {
     "openai": "gpt-5.6-sol",
     "gemini": "gemini-3.6-flash",
+    "qwen": "Qwen/Qwen3-VL-4B-Instruct",
     "dummy": "dummy",
 }
 
@@ -65,7 +72,7 @@ class OpenAIVLM(VLM):
     def __init__(self, model: str, api_key: str | None = None, **kwargs):
         super().__init__(model)
         self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
-        self._extra = kwargs
+        self.extra = kwargs
 
     def generate(self, prompt: str, images: list[bytes]) -> str:
         content: list[dict] = [{"type": "text", "text": prompt}]
@@ -80,7 +87,7 @@ class OpenAIVLM(VLM):
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": content}],
-            **self._extra,
+            **self.extra,
         )
         return response.choices[0].message.content or ""
 
@@ -92,7 +99,7 @@ class GeminiVLM(VLM):
         super().__init__(model)
         resolved_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.client = genai.Client(api_key=resolved_key)
-        self._extra = kwargs
+        self.extra = kwargs
 
     def generate(self, prompt: str, images: list[bytes]) -> str:
         parts: list = [types.Part.from_text(text=prompt)]
@@ -101,9 +108,48 @@ class GeminiVLM(VLM):
         response = self.client.models.generate_content(
             model=self.model,
             contents=parts,
-            **self._extra,
+            **self.extra,
         )
         return response.text or ""
+
+@register_vlm("qwen")
+class QwenVLM(VLM):
+    """Local Qwen3-VL backend running from downloaded weights via `transformers`"""
+
+    def __init__(
+        self,
+        model: str,
+        device_map: str = "auto",
+        dtype: str = "auto",
+        max_new_tokens: int = 512,
+        **kwargs,
+    ):
+        super().__init__(model)
+
+        self.max_new_tokens = max_new_tokens
+        self.processor = AutoProcessor.from_pretrained(model)
+        self.hf_model = AutoModelForImageTextToText.from_pretrained(model, dtype=dtype, device_map=device_map)
+        self.hf_model.eval()
+        self.extra = kwargs
+
+    def generate(self, prompt: str, images: list[bytes]) -> str:
+        pil_images = [Image.open(io.BytesIO(img)).convert("RGB") for img in images]
+        content: list[dict] = [{"type": "image"} for _ in pil_images]
+        content.append({"type": "text", "text": prompt})
+        messages = [{"role": "user", "content": content}]
+
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(
+            text=[text],
+            images=pil_images or None,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.hf_model.device)
+
+        with torch.no_grad():
+            generated = self.hf_model.generate(**inputs, max_new_tokens=self.max_new_tokens, **self.extra)
+        trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated)]
+        return self.processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
 @register_vlm("dummy")
 class DummyVLM(VLM):
