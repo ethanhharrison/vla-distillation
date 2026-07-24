@@ -2,6 +2,9 @@
 datasets/
 images/
 outputs/
+/datasets
+/outputs
+/future
 uv.lock
 .env
 *__pycache__/
