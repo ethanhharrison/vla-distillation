@@ -41,6 +41,28 @@ TEMPLATES: dict[str, str] = {
         "the background, lighting, camera angle, and the robot arm's pose. Make "
         "the smallest edit that clearly shows the task has begun but is not done."
     ),
+    "realism": (
+        "You're an expert REALISTIC AND CONSISTENT photo generator who knows world physics well. "
+        "You are given a photo from a robot's camera during a manipulation task. "
+        "The robot has just been given the instruction: \"{instruction}\". "
+        "Edit the image to show the scene EXACTLY ONE SECOND later, just after the "
+        "robot begins carrying out this instruction. Show a small, plausible "
+        "amount of progress: the relevant object(s) and the robot should have moved slightly "
+        "toward the goal of the instruction. Keep it the SAME scene from the "
+        "SAME camera viewpoint. Do NOT show the task as finished, but instead show ONE SECOND of progress. "
+        "Be careful about the count, color, and shape of objects, and make sure they stay consistent "
+        "with the original image."
+    ),
+    "realism_simplified_guided": (
+        "You're an expert REALISTIC AND CONSISTENT photo generator who knows world physics well. "
+        "You are given a photo from a robot's camera during a manipulation task. "
+        "The robot has just been given the instruction: \"{instruction}\". "
+        "Edit the image to show the scene EXACTLY ONE SECOND later, just after the "
+        "robot begins carrying out this instruction. Identify the important objects in the scene"
+        "paying CLOSE ATTENTION to their specific colors and the count of each of them. "
+        "Show the SAME scene with the SAME camera viewpoint (especially staying consistent for the important objects) "
+        "after EXACTLY ONE SECOND of progress is made on the task."
+    ),
 }
 
 DEFAULT_TEMPLATE = "default"

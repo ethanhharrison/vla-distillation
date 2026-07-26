@@ -73,6 +73,7 @@ class SubgoalConfig:
     openai_quality: str = "low"
     openai_size: str = "auto"
     cache_dir: Path = DEFAULT_CACHE_DIR
+    use_cache: bool = True
     output_dir: Path | None = None
 
 
@@ -186,6 +187,7 @@ def generate_subgoals(config: SubgoalConfig) -> SubgoalRun:
                     fut_bytes=fut_bytes, instruction=instruction,
                     prompt_text=prompt_text, k=k, cache=cache, tracker=tracker,
                     img_out=img_out, ex_id=ex["id"], vkey=vkey,
+                    use_cache=config.use_cache,
                 )
                 if cam_rec is None:  # ceiling hit
                     aborted = True
@@ -231,7 +233,7 @@ def generate_subgoals(config: SubgoalConfig) -> SubgoalRun:
 
 def _produce_camera(
     *, backend, be, cam, src_bytes, fut_bytes, instruction, prompt_text, k,
-    cache, tracker, img_out, ex_id, vkey,
+    cache, tracker, img_out, ex_id, vkey, use_cache=True,
 ) -> dict | None:
     """Produce one subgoal camera image (cached or paid). Returns the record, or
     None if the budget ceiling was hit (signals the caller to stop)."""
@@ -257,7 +259,7 @@ def _produce_camera(
                           getattr(be, "size", ""), getattr(be, "input_fidelity", ""),
                           cam, prompt_text, src_sha)
 
-    cached = cache.lookup(key) if backend != "dummy_image" else None
+    cached = cache.lookup(key) if (use_cache and backend != "dummy_image") else None
     if cached is not None:
         img_bytes = cache.get_blob(cached["blob"])
         rec.update(kind=cached.get("kind"), cached=True, cost_usd=0.0,
@@ -288,7 +290,7 @@ def _produce_camera(
                        cached=(not paid), example_id=ex_id, camera=cam)
         rec.update(kind=result.kind, cost_usd=(result.cost_usd_est if paid else 0.0),
                    meta=result.meta)
-        if backend != "dummy_image":
+        if backend != "dummy_image" and use_cache:
             blob = cache.put_blob(img_bytes, result.ext)
             cache.store(key, {"blob": blob, "kind": result.kind, "meta": result.meta,
                               "cost_usd_est": result.cost_usd_est})
@@ -344,6 +346,7 @@ def build_config_from_args(args: argparse.Namespace) -> SubgoalConfig:
         openai_quality=args.openai_quality,
         openai_size=args.openai_size,
         cache_dir=Path(args.cache_dir),
+        use_cache=not args.no_cache,
         output_dir=Path(args.output) if args.output else None,
     )
 
@@ -371,6 +374,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--openai-size", default="auto")
     p.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR),
                    help="Content-addressed edit cache (shared across runs; $0 reruns).")
+    p.add_argument("--no-cache", action="store_true",
+                   help="Never read or write the edit cache (always re-run edits).")
     p.add_argument("--output", default=None, help="Run output dir.")
     return p.parse_args(argv)
 

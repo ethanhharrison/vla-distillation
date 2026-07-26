@@ -11,17 +11,24 @@ sampled step.
 ```
 vla-distillation/
 ├── scripts/
-│   ├── download_dataset.py     # download DROID TFRecords from GCS
-│   └── view_dataset.py         # inspect a TFRecord's structure / dump frames
+│   ├── download_dataset.py            # download DROID TFRecords from GCS
+│   ├── view_dataset.py                # inspect a TFRecord's structure / dump frames
+│   ├── prepare_subgoal_examples.py    # build a Stage B example set from a DROID episode
+│   └── summarize_subgoal_images.py    # HTML contact sheet for a Stage B run
 ├── pipeline/
-│   └── language_instruction/   # instruction-generation pipeline
-│       ├── trajectory.py       # decode a TFRecord into per-step camera frames
-│       ├── vlm.py              # swappable VLM backends (OpenAI / Gemini / Dummy)
-│       ├── prompts.py          # prompt template + response parsing
-│       ├── pricing.py          # token accounting + approximate USD cost estimation
-│       └── generate.py         # orchestration + CLI
-├── datasets/                   # downloaded TFRecords (git-ignored)
-└── outputs/                    # generated instructions + saved frames (git-ignored)
+│   ├── language_instruction/   # Stage A: instruction generation
+│   │   ├── trajectory.py       # decode a TFRecord into per-step camera frames
+│   │   ├── vlm.py              # swappable VLM backends (OpenAI / Gemini / Dummy)
+│   │   ├── prompts.py          # prompt template + response parsing
+│   │   ├── pricing.py          # token accounting + approximate USD cost estimation
+│   │   └── generate.py         # orchestration + CLI
+│   └── subgoal_image/          # Stage B: instruction-conditioned subgoal images
+│       ├── backends.py         # swappable image-edit backends (Gemini / OpenAI / real_future / dummy)
+│       ├── prompts.py          # subgoal prompt templates
+│       ├── generate.py         # orchestration + CLI
+│       └── {imaging,cache,cost}.py  # phash + 224 downscale, edit cache, $ ceiling
+├── datasets/                   # downloaded TFRecords / RLDS (git-ignored)
+└── outputs/                    # generated instructions, subgoal runs, frames (git-ignored)
 ```
 
 ## Setup
@@ -32,9 +39,12 @@ install dependencies:
 ```bash
 uv venv
 uv pip install \
-  google-cloud-storage tqdm tensorflow \
-  openai google-genai python-dotenv
+  google-cloud-storage tqdm tensorflow tensorflow-datasets \
+  openai google-genai python-dotenv pillow
 ```
+
+(`tensorflow-datasets` + `pillow` are used by Stage B's example prep; the rest
+cover Stage A and downloads.)
 
 Run any command in the environment with `uv run ...` (examples below).
 
@@ -207,6 +217,120 @@ The two viewer scripts surface these numbers automatically:
   table, making it easy to weigh quality against price when comparing models.
 
 Runs generated without `--estimate-cost` simply omit the cost display.
+## 3. Generate subgoal images (Stage B)
+
+Stage B is the image analogue of Stage A: given a trajectory step and an
+instruction, it produces a **subgoal image** — the scene a few moments into
+executing the instruction (a scene-level change, with the robot's pose roughly
+unchanged). It edits all three cameras, and can also use the real `t+k` future
+frame as the subgoal. It runs on a small on-disk *example set* and is independent
+of Stage A.
+
+### 3a. Prepare an example set
+
+Extract a handful of steps from one DROID RLDS episode (three cameras + the real
+`t+k` future frames + instruction + proprioceptive state):
+
+```bash
+uv run python scripts/prepare_subgoal_examples.py \
+  --dataset-dir datasets/droid/droid_100/1.0.0 \
+  --episode-index 0 --num-examples 10 --interval 12 --start 20 --k 30
+```
+
+This writes `outputs/subgoal_examples/<episode-id>/` and prints the exact path.
+Save it in a shell variable for the commands below:
+
+```bash
+EX=outputs/subgoal_examples/Mon_Apr_17_14:48:05_2023
+```
+
+### 3b. Generate subgoal images, then visualize
+
+```bash
+uv run python -m pipeline.subgoal_image.generate \
+  --examples "$EX" \
+  --backend gemini_image openai_image real_future \
+  --prompt-template default \
+  --limit 10 --ceiling 5.0 \
+  --output outputs/subgoal_images/run1
+```
+
+```bash
+uv run python scripts/summarize_subgoal_images.py outputs/subgoal_images/run1
+```
+
+The visualizer writes a self-contained HTML contact sheet to
+`outputs/visualizations/subgoal_run1.html` — source vs subgoal for all three
+cameras, the perceptual-hash delta, and the prompt-template id per variant.
+
+### 3c. Experiment with prompts
+
+Prompt templates live in **`pipeline/subgoal_image/prompts.py`** (the `TEMPLATES`
+dict). Edit an existing template or add a new named one, then re-run. Pass
+`--no-cache` so every run actually re-hits the API, and keep it cheap while
+tuning (`--limit 2 --cameras exterior_1`, a low `--ceiling`):
+
+```bash
+# edit TEMPLATES in pipeline/subgoal_image/prompts.py, then:
+uv run python -m pipeline.subgoal_image.generate \
+  --examples "$EX" \
+  --backend gemini_image openai_image \
+  --prompt-template default \
+  --limit 2 --cameras exterior_1 \
+  --no-cache --ceiling 1.0 \
+  --output outputs/subgoal_images/tune1
+uv run python scripts/summarize_subgoal_images.py outputs/subgoal_images/tune1
+```
+
+Try wording without editing the file by passing a **literal** template (it must
+contain `{instruction}`):
+
+```bash
+uv run python -m pipeline.subgoal_image.generate \
+  --examples "$EX" --backend gemini_image \
+  --prompt-template "Robot camera. Instruction: \"{instruction}\". Nudge the target object slightly toward its goal; same viewpoint; arm unchanged; not finished." \
+  --limit 2 --cameras exterior_1 --no-cache --ceiling 1.0 \
+  --output outputs/subgoal_images/tune2
+uv run python scripts/summarize_subgoal_images.py outputs/subgoal_images/tune2
+```
+
+Compare several prompts side-by-side in one contact sheet (they stack under each
+source frame):
+
+```bash
+uv run python -m pipeline.subgoal_image.generate \
+  --examples "$EX" \
+  --backend gemini_image openai_image \
+  --prompt-template default minimal object_centric \
+  --limit 2 --cameras exterior_1 --no-cache --ceiling 2.0 \
+  --output outputs/subgoal_images/tune_compare
+uv run python scripts/summarize_subgoal_images.py outputs/subgoal_images/tune_compare
+```
+
+### CLI options
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--examples` | (required) | Example-set dir (contains `meta.json`). |
+| `--backend` | `real_future dummy_image` | One or more of `gemini_image`, `openai_image`, `real_future`, `dummy_image`. |
+| `--prompt-template` | `default` | Template name(s) from `prompts.py`, or literal template string(s) containing `{instruction}`. |
+| `--cameras` | all three | Which cameras to edit (`exterior_1`, `exterior_2`, `wrist`). |
+| `--limit` | all | Only the first N examples. |
+| `--instruction` | each example's own | Override the instruction for all examples. |
+| `--ceiling` | `5.0` | Hard $ spend ceiling; aborts before overspending. |
+| `--no-cache` | off | Never read/write the edit cache (always re-run edits). |
+| `--no-spend` | off | Drop paid backends; run only `real_future` / `dummy_image`. |
+| `--gemini-model` | `gemini-2.5-flash-image` | Gemini image-edit model. |
+| `--openai-model` / `--openai-quality` | `gpt-image-1.5` / `low` | OpenAI model and quality (`low`/`medium`/`high`/`auto`). |
+| `--output` | auto-named | Run output dir under `outputs/subgoal_images/`. |
+
+The two most important knobs while tuning:
+
+- **`--prompt-template`** — the wording that steers the edit (edit `prompts.py`
+  or pass a literal).
+- **`--backend`** — `gemini_image` tends to under-edit exterior views,
+  `openai_image` edits more but reshapes the aspect ratio, `real_future` is the
+  real future frame (a useful ground-truth reference for "how much should change").
 
 ## Choosing / adding a VLM backend
 
