@@ -381,6 +381,18 @@ for step in result.steps:
 raw_response, image_paths)` objects rather than only writing text, which makes it
 straightforward to feed the results into downstream tooling.
 
+## Explorations
+
+Prototype investigations that are intentionally kept out of the `pipeline/`
+package (self-contained, may pull large external models/weights):
+
+- **`explorations/dreamzero/`** — evaluating [DreamZero-DROID](https://huggingface.co/GEAR-Dreams/DreamZero-DROID)
+  (14B Wan-based World Action Model) as a single model that jointly generates a
+  future **subgoal video + action chunk** — i.e. a possible combined replacement
+  for the image and action stages. Includes a from-scratch reproduce guide (with
+  the CUDA/flash-attn/deepspeed gotchas), a single-GPU serving script, and an
+  A/B/C instruction-following experiment. See its `README.md`.
+
 ## Roadmap
 
 - **Instruction verification**: prompt a VLM with each generated instruction and
