@@ -8,3 +8,8 @@ outputs/
 uv.lock
 .env
 *__pycache__/
+
+# explore/dreamzero: keep upstream clone, venv, weights, and results out of git
+/explorations/dreamzero/repo/
+/explorations/dreamzero/.venv/
+/explorations/dreamzero/results/
