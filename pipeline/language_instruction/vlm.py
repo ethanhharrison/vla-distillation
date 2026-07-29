@@ -22,6 +22,7 @@ from .pricing import Usage
 DEFAULT_MODELS = {
     "openai": "gpt-5.6-sol",
     "gemini": "gemini-3.6-flash",
+    "qwen": "qwen3-vl-235b-a22b-instruct",
     "hf": "Qwen/Qwen3-VL-4B-Instruct",
     "dummy": "dummy",
 }
@@ -91,6 +92,25 @@ class OpenAIVLM(VLM):
             output_tokens=usage.completion_tokens if usage else 0,
         )
         return response.choices[0].message.content or ""
+
+@register_vlm("qwen")
+class QwenVLM(OpenAIVLM):
+    """Alibaba DashScope (Qwen) backend via the OpenAI-compatible API."""
+
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        **kwargs,
+    ):
+        VLM.__init__(self, model)
+        resolved_key = api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY")
+        self.client = OpenAI(
+            api_key=resolved_key,
+            base_url=base_url or "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        )
+        self.extra = kwargs
 
 @register_vlm("gemini")
 class GeminiVLM(VLM):

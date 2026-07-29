@@ -29,6 +29,65 @@ commentary.
 {avoid_section}"""
 
 
+# Like INSTRUCTION_PROMPT but asks for an exhaustive set with no fixed count.
+# Intended for probing a single frame (e.g. the first step) to see how many
+# distinct tasks a model can enumerate. Note: {num_instructions} is intentionally
+# absent — it is ignored when this template is rendered.
+EXHAUSTIVE_INSTRUCTION_PROMPT = """You are labeling a robot manipulation dataset.
+
+The image(s) are the camera view(s) of a robot arm at one moment in time (step \
+{step} of {total}). Looking at the current scene and the objects within reach, \
+enumerate AS MANY distinct natural-language instructions as you reasonably can \
+describing tasks the robot could plausibly begin executing *starting from this \
+exact configuration*. There is no upper limit — aim to be exhaustive while \
+keeping every instruction genuinely distinct and physically plausible. IMPORTANT: \
+Each instruction must be UNIQUE. These instructions must be distinct and should not \
+assume that previous instructions generated have already occured. All instuctions must \
+assume they start at the same starting image.
+
+Guidelines:
+- Each instruction should be a short imperative command (e.g. "pick up the red \
+block").
+- Make every instruction meaningfully different from the others — do NOT pad the \
+list with trivial rewordings, synonyms, or near-duplicates of tasks you already \
+listed.
+- Only reference objects that are actually visible in the scene.
+- Cover the full range of plausible tasks: different target objects, different \
+manipulations (pick, place, push, open, close, pour, stack, wipe, etc.), and \
+different goal locations where they make sense.
+- Do NOT copy, repeat, or paraphrase any of the instructions listed under \
+"Instructions to avoid" below. Propose genuinely new tasks instead.
+- Output exactly one instruction per line, with no numbering, bullets, or extra \
+commentary.
+{avoid_section}"""
+
+
+# name -> template. Selectable via the generator's `--prompt-template` flag.
+INSTRUCTION_TEMPLATES: dict[str, str] = {
+    "default": INSTRUCTION_PROMPT,
+    "exhaustive": EXHAUSTIVE_INSTRUCTION_PROMPT,
+}
+
+DEFAULT_TEMPLATE = "default"
+
+
+def resolve_instruction_template(name_or_text: str) -> tuple[str, str]:
+    """Return (template_name, template_text).
+
+    Accepts a registered template name, or a literal template string (which must
+    contain the `{avoid_section}` placeholder so the avoid list can be injected).
+    """
+    if name_or_text in INSTRUCTION_TEMPLATES:
+        return name_or_text, INSTRUCTION_TEMPLATES[name_or_text]
+    if "{avoid_section}" in name_or_text:
+        return "custom", name_or_text
+    raise ValueError(
+        f"Unknown template {name_or_text!r}; not a registered name "
+        f"({', '.join(INSTRUCTION_TEMPLATES)}) and not a literal template "
+        "containing '{avoid_section}'."
+    )
+
+
 def _build_avoid_section(
     original_instructions: list[str] | None,
     previous_instructions: list[str] | None,

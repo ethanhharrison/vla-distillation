@@ -13,7 +13,15 @@ load_dotenv()
 
 from .filter import ScoredInstruction, build_judge, score_instructions
 from .pricing import RunCost, estimate_cost
-from .prompts import INSTRUCTION_PROMPT, JUDGE_PROMPT, build_prompt, parse_instructions
+from .prompts import (
+    DEFAULT_TEMPLATE,
+    INSTRUCTION_PROMPT,
+    INSTRUCTION_TEMPLATES,
+    JUDGE_PROMPT,
+    build_prompt,
+    parse_instructions,
+    resolve_instruction_template,
+)
 from .trajectory import DEFAULT_CAMERAS, Trajectory, load_trajectory
 from .vlm import VLM, available_providers, build_vlm
 
@@ -31,6 +39,7 @@ class GenerationConfig:
     cameras: tuple[str, ...] = DEFAULT_CAMERAS
     max_steps: int | None = None
     prompt_template: str = INSTRUCTION_PROMPT
+    prompt_template_name: str = DEFAULT_TEMPLATE
     output_path: Path | None = None
     example_index: int = 0
     save_images: bool = False
@@ -209,6 +218,7 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
         f"model: {vlm.model}",
         f"step_interval: {config.step_interval}",
         f"num_instructions: {config.num_instructions}",
+        f"prompt_template: {config.prompt_template_name}",
         f"cameras: {', '.join(config.cameras)}",
         f"trajectory_length: {result.trajectory_length}",
     ]
@@ -245,6 +255,7 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
     return output_path
 
 def build_config_from_args(args: argparse.Namespace) -> GenerationConfig:
+    template_name, template_text = resolve_instruction_template(args.prompt_template)
     return GenerationConfig(
         record_path=Path(args.record),
         provider=args.provider,
@@ -253,6 +264,8 @@ def build_config_from_args(args: argparse.Namespace) -> GenerationConfig:
         num_instructions=args.num_instructions,
         cameras=tuple(args.cameras),
         max_steps=args.max_steps,
+        prompt_template=template_text,
+        prompt_template_name=template_name,
         output_path=Path(args.output) if args.output else None,
         example_index=args.example_index,
         save_images=args.save_images,
@@ -287,7 +300,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--num-instructions",
         type=int,
         default=3,
-        help="How many candidate instructions to request per step.",
+        help="How many candidate instructions to request per step "
+        "(ignored by templates that request an unbounded set, e.g. 'exhaustive').",
+    )
+    parser.add_argument(
+        "--prompt-template",
+        default=DEFAULT_TEMPLATE,
+        help="Instruction prompt template: a registered name "
+        f"({', '.join(INSTRUCTION_TEMPLATES)}) or a literal template string "
+        "containing '{avoid_section}'.",
     )
     parser.add_argument(
         "--cameras",
