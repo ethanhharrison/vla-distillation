@@ -62,10 +62,80 @@ commentary.
 {avoid_section}"""
 
 
+# Long-horizon / high-level goals rather than atomic single actions.
+LONG_HORIZON_INSTRUCTION_PROMPT = """You are labeling a robot manipulation dataset.
+
+The image(s) are the camera view(s) of a robot arm at one moment in time (step \
+{step} of {total}). Looking at the current scene and the objects within reach, \
+propose {num_instructions} distinct natural-language instructions describing \
+*long-horizon, general* tasks the robot could plausibly begin executing \
+*starting from this exact configuration*.
+
+Only request high-level goals that would take several steps to complete, not atomic \
+single actions. For example, request "clean up the table" over "pick up the red \
+cup", or "organize the cluttered workspace" over "push the bottle slightly left".
+
+Guidelines:
+- Each instruction should be a short imperative command naming a broad task \
+goal (e.g. "clean up the table", "put away the dishes", "clear the clutter").
+- Avoid overly specific, single-action instructions (e.g. avoid "grasp the blue \
+block" or "move 5 cm right") unless they are framed as a full multi-step task.
+- Make the instructions meaningfully different from one another — do not list \
+near-duplicates or slight rewordings of the same goal.
+- Only reference objects, surfaces, or scene layout that are actually visible \
+and make the task physically feasible from this configuration.
+- Do NOT copy, repeat, or paraphrase any of the instructions listed under \
+"Instructions to avoid" below (this includes the dataset's original task \
+instructions and anything already suggested at earlier steps). Propose \
+genuinely new tasks instead.
+- Output exactly one instruction per line, with no numbering, bullets, or extra \
+commentary.
+{avoid_section}"""
+
+
+# Fine-grained / precision-specified motions rather than coarse high-level goals.
+PRECISION_INSTRUCTION_PROMPT = """You are labeling a robot manipulation dataset.
+
+The image(s) are the camera view(s) of a robot arm at one moment in time (step \
+{step} of {total}). Looking at the current scene and the objects within reach, \
+propose {num_instructions} distinct natural-language instructions describing \
+*fine-tuned, precision* manipulations the robot could plausibly begin executing \
+*starting from this exact configuration*.
+
+Be quantitative and spatially specific. Request "move the rag 10cm to the left" \
+over "move the rag to the left", or "rotate the cup 45 degrees clockwise" over \
+"turn the cup". Include magnitudes (distances, angles, counts) and clear \
+directions or contact constraints when they make the motion unambiguous.
+
+Guidelines:
+- Each instruction should be a short imperative command with at least one \
+precise detail: metric or approximate distance, angle, offset, count, or a \
+tight relative placement (e.g. "place the spoon parallel to the knife, 2cm \
+apart").
+- Avoid vague high-level goals (e.g. avoid "clean up the table" or "organize \
+the workspace"); focus on well-specified single manipulations or short precise \
+sequences.
+- Make the instructions meaningfully different from one another — vary the \
+object, the motion type, and the precision targets; do not pad with \
+rewordings or near-duplicates.
+- Only reference objects that are actually visible, and keep the specified \
+motion physically feasible from this exact configuration (do not invent \
+unseen objects or impossible offsets).
+- Do NOT copy, repeat, or paraphrase any of the instructions listed under \
+"Instructions to avoid" below (this includes the dataset's original task \
+instructions and anything already suggested at earlier steps). Propose \
+genuinely new tasks instead.
+- Output exactly one instruction per line, with no numbering, bullets, or extra \
+commentary.
+{avoid_section}"""
+
+
 # name -> template. Selectable via the generator's `--prompt-template` flag.
 INSTRUCTION_TEMPLATES: dict[str, str] = {
     "default": INSTRUCTION_PROMPT,
     "exhaustive": EXHAUSTIVE_INSTRUCTION_PROMPT,
+    "long_horizon": LONG_HORIZON_INSTRUCTION_PROMPT,
+    "precision": PRECISION_INSTRUCTION_PROMPT,
 }
 
 DEFAULT_TEMPLATE = "default"

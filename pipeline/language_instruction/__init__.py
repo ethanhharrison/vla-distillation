@@ -14,15 +14,25 @@ from .generate import (
     generate_instructions,
     write_txt,
 )
+from .pipeline import (
+    CallResult,
+    PipelineConfig,
+    PipelineResult,
+    load_pipeline_config,
+    run_pipeline,
+)
 from .pricing import CostEstimate, RunCost, Usage, estimate_cost
 from .trajectory import Trajectory, load_trajectories, load_trajectory
 from .vlm import VLM, available_providers, build_vlm, register_vlm
 
 __all__ = [
     "VLM",
+    "CallResult",
     "CostEstimate",
     "GenerationConfig",
     "GenerationResult",
+    "PipelineConfig",
+    "PipelineResult",
     "RunCost",
     "ScoredInstruction",
     "StepInstructions",
@@ -34,9 +44,11 @@ __all__ = [
     "build_vlm",
     "estimate_cost",
     "generate_instructions",
+    "load_pipeline_config",
     "load_trajectories",
     "load_trajectory",
     "register_vlm",
+    "run_pipeline",
     "score_instructions",
     "write_txt",
 ]

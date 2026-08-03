@@ -10,6 +10,8 @@ sampled step.
 
 ```
 vla-distillation/
+├── configs/
+│   └── language_instruction/  # YAML multi-call Stage A configs
 ├── scripts/
 │   ├── download_dataset.py            # download DROID TFRecords from GCS
 │   ├── view_dataset.py                # inspect a TFRecord's structure / dump frames
@@ -21,7 +23,8 @@ vla-distillation/
 │   │   ├── vlm.py              # swappable VLM backends (OpenAI / Gemini / Dummy)
 │   │   ├── prompts.py          # prompt template + response parsing
 │   │   ├── pricing.py          # token accounting + approximate USD cost estimation
-│   │   └── generate.py         # orchestration + CLI
+│   │   ├── generate.py         # single-call orchestration + CLI
+│   │   └── pipeline.py         # multi-call YAML orchestration + CLI
 │   └── subgoal_image/          # Stage B: instruction-conditioned subgoal images
 │       ├── backends.py         # swappable image-edit backends (Gemini / OpenAI / real_future / dummy)
 │       ├── prompts.py          # subgoal prompt templates
@@ -40,11 +43,11 @@ install dependencies:
 uv venv
 uv pip install \
   google-cloud-storage tqdm tensorflow tensorflow-datasets \
-  openai google-genai python-dotenv pillow
+  openai google-genai python-dotenv pillow pyyaml
 ```
 
-(`tensorflow-datasets` + `pillow` are used by Stage B's example prep; the rest
-cover Stage A and downloads.)
+(`tensorflow-datasets` + `pillow` are used by Stage B's example prep; `pyyaml`
+loads multi-call Stage A configs; the rest cover Stage A and downloads.)
 
 Run any command in the environment with `uv run ...` (examples below).
 
@@ -125,6 +128,26 @@ uv run python -m pipeline.language_instruction.generate \
 
 This writes a text file to `outputs/language_instructions/` and (with
 `--save-images`) the queried frames to `outputs/language_instruction_images/<record>/`.
+
+### Multi-call pipeline (YAML)
+
+To run several independent generate calls on the same trajectory and merge their
+verified instructions, use a YAML config:
+
+```bash
+uv run python -m pipeline.language_instruction.pipeline \
+  --config configs/language_instruction/example_multi_call.yaml
+```
+
+Each entry under `calls` is a full Stage A generate (optional judge). Calls do
+**not** share an avoid-list; results are merged and string-deduped by step.
+Optional shared defaults live under `defaults:`. A `postprocess:` block is
+reserved for a future text-only LLM filter/paraphrase step after each call — set
+`enabled: false` for now.
+
+Outputs go under `outputs/language_instructions/<record>_pipeline_<timestamp>/`
+(`merged.txt` plus per-call dumps). Override with top-level `output:` or
+`--output`.
 
 ### CLI options
 

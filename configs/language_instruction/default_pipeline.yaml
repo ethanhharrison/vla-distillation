@@ -1,0 +1,26 @@
+record: datasets/droid/success/success-00285.tfrecord
+example_index: 0
+save_images: true
+estimate_cost: false
+# optional; defaults to outputs/language_instructions/<record>_pipeline_<ts>/
+# output: outputs/language_instructions/my_run
+
+defaults:
+  provider: gemini
+  judge: false
+  judge_threshold: 3
+  max_steps: 1
+
+calls:
+  - name: default
+    prompt_template: default
+    num_instructions: 75
+  - name: long_horizon
+    prompt_template: long_horizon
+    num_instructions: 25
+  - name: precision
+    prompt_template: precision
+    num_instructions: 25
+
+postprocess:
+  enabled: false

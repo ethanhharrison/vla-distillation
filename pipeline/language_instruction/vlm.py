@@ -21,7 +21,7 @@ from .pricing import Usage
 # Default model per provider; override with `build_vlm(..., model=...)`.
 DEFAULT_MODELS = {
     "openai": "gpt-5.6-sol",
-    "gemini": "gemini-3.6-flash",
+    "gemini": "gemini-robotics-er-2-preview",
     "qwen": "qwen3-vl-235b-a22b-instruct",
     "hf": "Qwen/Qwen3-VL-4B-Instruct",
     "dummy": "dummy",
