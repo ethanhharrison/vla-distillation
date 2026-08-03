@@ -14,10 +14,11 @@ load_dotenv()
 from .filter import ScoredInstruction, build_judge, score_instructions
 from .pricing import RunCost, estimate_cost
 from .prompts import (
+    ADHERENCE_JUDGE_PROMPT,
     DEFAULT_TEMPLATE,
     INSTRUCTION_PROMPT,
     INSTRUCTION_TEMPLATES,
-    JUDGE_PROMPT,
+    UNIQUENESS_JUDGE_PROMPT,
     build_prompt,
     parse_instructions,
     resolve_instruction_template,
@@ -48,7 +49,9 @@ class GenerationConfig:
     judge_provider: str | None = None
     judge_model: str | None = None
     judge_threshold: int = 3
-    judge_prompt_template: str = JUDGE_PROMPT
+    judge_prompt_template: str = ADHERENCE_JUDGE_PROMPT
+    uniqueness_judge_prompt_template: str = UNIQUENESS_JUDGE_PROMPT
+    uniqueness_threshold: int | None = None
     estimate_cost: bool = False
 
 @dataclass
@@ -114,6 +117,8 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None, judg
                 total=trajectory.length,
                 threshold=config.judge_threshold,
                 template=config.judge_prompt_template,
+                uniqueness_template=config.uniqueness_judge_prompt_template,
+                uniqueness_threshold=config.uniqueness_threshold,
             )
         else:
             accepted_instructions = proposed_instructions
@@ -228,6 +233,13 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
         lines.append(f"judge_provider: {judge_provider}")
         lines.append(f"judge_model: {judge_model}")
         lines.append(f"judge_threshold: {config.judge_threshold}")
+        uniq_thr = (
+            config.uniqueness_threshold
+            if config.uniqueness_threshold is not None
+            else config.judge_threshold
+        )
+        lines.append(f"uniqueness_threshold: {uniq_thr}")
+        lines.append("judge_stages: adherence, uniqueness")
     if config.estimate_cost:
         lines.extend(cost_report_lines(build_run_cost(result, vlm, judge)))
     if result.metadata:
@@ -238,15 +250,34 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
 
     for step_result in result.steps:
         lines.append(f"[step {step_result.step}]")
-        scores = {s.instruction: s.score for s in step_result.scored}
+        score_by_inst = {s.instruction: s for s in step_result.scored}
         for instruction in step_result.instructions:
-            score = scores.get(instruction)
-            suffix = f" | score: {score}" if score is not None else ""
+            scored = score_by_inst.get(instruction)
+            suffix = ""
+            if scored is not None:
+                parts = []
+                if scored.adherence_score is not None:
+                    parts.append(f"adherence: {scored.adherence_score}")
+                if scored.uniqueness_score is not None:
+                    parts.append(f"uniqueness: {scored.uniqueness_score}")
+                elif scored.score is not None and scored.adherence_score is None:
+                    parts.append(f"score: {scored.score}")
+                if parts:
+                    suffix = " | " + " | ".join(parts)
             lines.append(f"  - {instruction}{suffix}")
         for scored in step_result.scored:
             if not scored.accepted:
-                score = scored.score if scored.score is not None else "?"
-                lines.append(f"  (rejected) {scored.instruction} | score: {score}")
+                parts = []
+                if scored.adherence_score is not None:
+                    parts.append(f"adherence: {scored.adherence_score}")
+                if scored.uniqueness_score is not None:
+                    parts.append(f"uniqueness: {scored.uniqueness_score}")
+                if scored.rejected_stage:
+                    parts.append(f"stage: {scored.rejected_stage}")
+                if not parts and scored.score is not None:
+                    parts.append(f"score: {scored.score}")
+                detail = " | ".join(parts) if parts else "score: ?"
+                lines.append(f"  (rejected) {scored.instruction} | {detail}")
         for camera, path in step_result.image_paths.items():
             lines.append(f"  (image) {camera}: {path}")
         lines.append("")
@@ -274,6 +305,7 @@ def build_config_from_args(args: argparse.Namespace) -> GenerationConfig:
         judge_provider=args.judge_provider,
         judge_model=args.judge_model,
         judge_threshold=args.judge_threshold,
+        uniqueness_threshold=args.uniqueness_threshold,
         estimate_cost=args.estimate_cost,
     )
 
@@ -347,7 +379,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--judge",
         action="store_true",
-        help="Score each candidate with a VLM judge and drop low-scoring ones.",
+        help="Score each candidate with a two-stage VLM judge (adherence, "
+        "then uniqueness on survivors) and drop low-scoring ones.",
     )
     parser.add_argument(
         "--judge-provider",
@@ -364,7 +397,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--judge-threshold",
         type=int,
         default=3,
-        help="Minimum judge score (1-5) required to keep an instruction.",
+        help="Minimum stage-1 adherence score (1-5) required to keep a candidate "
+        "for the uniqueness pass.",
+    )
+    parser.add_argument(
+        "--uniqueness-threshold",
+        type=int,
+        default=None,
+        help="Minimum stage-2 uniqueness score (1-5). Defaults to --judge-threshold.",
     )
     parser.add_argument(
         "--estimate-cost",

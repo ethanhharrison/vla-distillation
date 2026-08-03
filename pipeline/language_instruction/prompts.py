@@ -205,10 +205,7 @@ def parse_instructions(text: str) -> list[str]:
     return instructions
 
 
-# The judge is shown the same scene image(s) plus the exact system prompt that
-# produced the candidates, so it can score how well each candidate obeys that
-# prompt (feasible in the scene, references only visible objects, genuinely new).
-JUDGE_PROMPT = """You are a strict reviewer for a robot manipulation dataset.
+ADHERENCE_JUDGE_PROMPT = """You are a strict reviewer for a robot manipulation dataset.
 
 The image(s) are the robot's camera view(s) at one moment in time (step {step} \
 of {total}) — the same view(s) used to generate the candidate instructions below.
@@ -218,16 +215,20 @@ Another model was asked to propose instructions using this exact system prompt:
 {generation_prompt}
 --- END GENERATION SYSTEM PROMPT ---
 
-Score how well each candidate instruction below adheres to that system prompt. \
+Score how well each candidate instruction adheres to that system prompt for \
+**all criteria EXCEPT uniqueness / novelty**. Do NOT penalize an instruction \
+for being similar or identical to another candidate, or for matching anything \
+under "Instructions to avoid". Uniqueness is scored in a separate later pass.
+
 Use an integer from 1 to 5, where:
-- 5 = fully adheres: the task is physically plausible starting from the current \
-scene, references only objects actually visible, is a clear short imperative \
-command, and is genuinely new (not a copy or paraphrase of any instruction the \
-system prompt says to avoid).
+- 5 = fully adheres on non-uniqueness criteria: the task is physically plausible \
+starting from the current scene, references only objects actually visible, is a \
+clear short imperative command, and matches the style/focus of the generation \
+prompt (e.g. long-horizon vs precision wording when that prompt requires it).
 - 3 = partially adheres (e.g. slightly ambiguous, or references an object that \
 is only marginally visible).
-- 1 = clearly violates the system prompt (e.g. references objects not present, \
-is not achievable from this configuration, or duplicates an instruction to avoid).
+- 1 = clearly violates (e.g. references objects not present, is not achievable \
+from this configuration, or ignores the generation prompt's style requirements).
 
 Candidate instructions:
 {numbered_instructions}
@@ -237,14 +238,50 @@ Output exactly one line per candidate, in the same order, formatted as:
 Output nothing else — no explanations, headers, or extra text."""
 
 
+# Stage 2 — only uniqueness among survivors.
+UNIQUENESS_JUDGE_PROMPT = """You are a strict reviewer for a robot manipulation dataset.
+
+The image(s) are the robot's camera view(s) at one moment in time (step {step} \
+of {total}). These candidate instructions already passed an adherence filter; \
+your *only* job is to score **uniqueness**.
+
+The generation system prompt (for context on what to avoid) was:
+--- BEGIN GENERATION SYSTEM PROMPT ---
+{generation_prompt}
+--- END GENERATION SYSTEM PROMPT ---
+
+Score each candidate on uniqueness only. Use an integer from 1 to 5, where:
+- 5 = genuinely new: not a copy, paraphrase, or near-duplicate of (a) any \
+instruction listed under "Instructions to avoid" in the system prompt above, \
+and (b) any other candidate in this list (if two candidates are near-duplicates, \
+give the earlier one a high score and the later one a low score).
+- 3 = somewhat overlapping (shares the same goal/object with only a minor word \
+change, or is partially redundant with the avoid list or another candidate).
+- 1 = clear duplicate or close paraphrase of an avoided instruction or of an \
+earlier candidate in this list.
+
+Do NOT score feasibility, visibility, or style — assume those are already fine.
+
+Candidate instructions (number order is significant for near-duplicate ranking):
+{numbered_instructions}
+
+Output exactly one line per candidate, in the same order, formatted as:
+<candidate number>. <score>
+Output nothing else — no explanations, headers, or extra text."""
+
+
+# Back-compat alias used by older call sites / configs.
+JUDGE_PROMPT = ADHERENCE_JUDGE_PROMPT
+
+
 def build_judge_prompt(
     generation_prompt: str,
     instructions: list[str],
     step: int,
     total: int,
-    template: str = JUDGE_PROMPT,
+    template: str = ADHERENCE_JUDGE_PROMPT,
 ) -> str:
-    """Render the judge prompt for a set of candidate instructions."""
+    """Render a judge prompt for a set of candidate instructions."""
     numbered = "\n".join(
         f"{i}. {text}" for i, text in enumerate(instructions, start=1)
     )

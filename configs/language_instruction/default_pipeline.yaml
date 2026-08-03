@@ -7,8 +7,9 @@ estimate_cost: false
 
 defaults:
   provider: gemini
-  judge: false
-  judge_threshold: 3
+  judge: true
+  judge_threshold: 4
+  uniqueness_threshold: 3
   max_steps: 1
 
 calls:
