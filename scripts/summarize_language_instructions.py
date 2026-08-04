@@ -29,22 +29,12 @@ ORIGINAL_INSTRUCTION_KEYS = (
 
 
 def _split_score(text: str) -> tuple[str, dict[str, str] | None]:
-    """Split an instruction line into text + optional grade tags.
-
-    Supports:
-      - legacy:  ``pick up cup | score: 4``
-      - two-stage: ``pick up cup | adherence: 4 | uniqueness: 5``
-      - rejected:  ``... | adherence: 2 | stage: adherence``
-      - merged provenance: ``... | from: call_a`` (kept if present)
-    """
-    # Grades always appear after the first ` | <key>: ` tag delimiter set.
-    # Instruction text itself can contain " | " rarely; we key off known tags.
-    known = ("score:", "adherence:", "uniqueness:", "stage:", "from:")
+    """Split an instruction line into text + optional grade tags."""
+    known = ("adherence:", "uniqueness:", "stage:", "from:")
     parts = text.split(" | ")
     if len(parts) == 1:
         return text.strip(), None
 
-    # Find first segment that starts with a known grade key.
     cut = None
     for i, part in enumerate(parts):
         head = part.strip().lower()
@@ -52,7 +42,6 @@ def _split_score(text: str) -> tuple[str, dict[str, str] | None]:
             cut = i
             break
     if cut is None or cut == 0:
-        # No grade keys found, or the whole line looks like tags only.
         return text.strip(), None
 
     instruction = " | ".join(parts[:cut]).strip()
@@ -115,8 +104,7 @@ def parse_run(path: Path) -> dict:
             current = {
                 "step": int(stripped[len("[step ") : -1]),
                 "instructions": [],
-                "grades": [],  # list[dict|None] parallel to instructions
-                "scores": [],  # back-compat display strings for badges
+                "grades": [],
                 "rejected": [],
                 "images": {},
             }
@@ -124,10 +112,9 @@ def parse_run(path: Path) -> dict:
             text, grades = _split_score(stripped[2:])
             current["instructions"].append(text)
             current["grades"].append(grades)
-            current["scores"].append(grades)
         elif stripped.startswith("(rejected) ") and current is not None:
             text, grades = _split_score(stripped[len("(rejected) ") :])
-            current["rejected"].append({"text": text, "grades": grades, "score": grades})
+            current["rejected"].append({"text": text, "grades": grades})
         elif stripped.startswith("(image) ") and current is not None:
             camera, _, image_path = stripped[len("(image) ") :].partition(": ")
             current["images"][camera] = image_path
@@ -152,44 +139,32 @@ def _embed_image(image_path: str) -> str:
     return f'<img src="data:image/jpeg;base64,{encoded}" alt="{html.escape(path.name)}">'
 
 
-def _score_badge(grades: dict[str, str] | str | None, rejected: bool = False) -> str:
-    """Render score badge(s) for legacy `score` or two-stage adherence/uniqueness."""
-    if grades is None:
+def _score_badge(grades: dict[str, str] | None, rejected: bool = False) -> str:
+    """Render adherence / uniqueness / stage / from badges."""
+    if not grades:
         return ""
-    # Legacy callers may still pass a bare string score.
-    if isinstance(grades, str):
-        grades = {"score": grades}
 
     base = "badge rejected-badge" if rejected else "badge"
     badges: list[str] = []
-    if "adherence" in grades or "uniqueness" in grades or "stage" in grades:
-        if "adherence" in grades:
-            badges.append(
-                f'<span class="{base}">adherence {html.escape(grades["adherence"])}</span>'
-            )
-        if "uniqueness" in grades:
-            badges.append(
-                f'<span class="{base}">uniqueness {html.escape(grades["uniqueness"])}</span>'
-            )
-        if rejected and "stage" in grades:
-            badges.append(
-                f'<span class="{base}">stage {html.escape(grades["stage"])}</span>'
-            )
-        elif "from" in grades:
-            badges.append(
-                f'<span class="{base}">from {html.escape(grades["from"])}</span>'
-            )
-    elif "score" in grades:
-        badges.append(f'<span class="{base}">score {html.escape(grades["score"])}</span>')
-    elif "from" in grades:
-        badges.append(f'<span class="{base}">from {html.escape(grades["from"])}</span>')
-    else:
-        # Unknown keys: show key=value pairs compactly.
+    if "adherence" in grades:
+        badges.append(
+            f'<span class="{base}">adherence {html.escape(grades["adherence"])}</span>'
+        )
+    if "uniqueness" in grades:
+        badges.append(
+            f'<span class="{base}">uniqueness {html.escape(grades["uniqueness"])}</span>'
+        )
+    if rejected and "stage" in grades:
+        badges.append(
+            f'<span class="{base}">stage {html.escape(grades["stage"])}</span>'
+        )
+    if "from" in grades:
+        badges.append(
+            f'<span class="{base}">from {html.escape(grades["from"])}</span>'
+        )
+    if not badges:
         label = ", ".join(f"{k} {v}" for k, v in grades.items())
         badges.append(f'<span class="{base}">{html.escape(label)}</span>')
-
-    if not badges:
-        return ""
     return " " + " ".join(badges)
 
 
@@ -255,16 +230,14 @@ def render_html(run: dict, source: Path) -> str:
             f'<figure>{_embed_image(p)}<figcaption>{html.escape(cam)}</figcaption></figure>'
             for cam, p in step["images"].items()
         )
-        grades_list = step.get("grades") or step.get("scores") or [None] * len(
-            step["instructions"]
-        )
+        grades_list = step.get("grades") or [None] * len(step["instructions"])
         instructions = "".join(
             f"<li>{html.escape(text)}{_score_badge(grades)}</li>"
             for text, grades in zip(step["instructions"], grades_list)
         )
         rejected_items = "".join(
             f'<li>{html.escape(r["text"])}'
-            f'{_score_badge(r.get("grades") or r.get("score"), rejected=True)}</li>'
+            f'{_score_badge(r.get("grades"), rejected=True)}</li>'
             for r in step.get("rejected", [])
         )
         rejected_block = (

@@ -260,8 +260,6 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
                     parts.append(f"adherence: {scored.adherence_score}")
                 if scored.uniqueness_score is not None:
                     parts.append(f"uniqueness: {scored.uniqueness_score}")
-                elif scored.score is not None and scored.adherence_score is None:
-                    parts.append(f"score: {scored.score}")
                 if parts:
                     suffix = " | " + " | ".join(parts)
             lines.append(f"  - {instruction}{suffix}")
@@ -274,9 +272,7 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
                     parts.append(f"uniqueness: {scored.uniqueness_score}")
                 if scored.rejected_stage:
                     parts.append(f"stage: {scored.rejected_stage}")
-                if not parts and scored.score is not None:
-                    parts.append(f"score: {scored.score}")
-                detail = " | ".join(parts) if parts else "score: ?"
+                detail = " | ".join(parts) if parts else "?"
                 lines.append(f"  (rejected) {scored.instruction} | {detail}")
         for camera, path in step_result.image_paths.items():
             lines.append(f"  (image) {camera}: {path}")

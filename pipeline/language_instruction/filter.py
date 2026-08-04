@@ -20,15 +20,9 @@ from .vlm import VLM, build_vlm
 
 @dataclass
 class ScoredInstruction:
-    """A candidate with stage scores and a final accept/reject verdict.
-
-    `score` is kept for backward-compatible display: the adherence score if
-    rejected at stage 1, else the uniqueness score (or adherence alone when
-    uniqueness was not run). Prefer `adherence_score` / `uniqueness_score`.
-    """
+    """A candidate with stage scores and a final accept/reject verdict."""
 
     instruction: str
-    score: int | None
     accepted: bool
     adherence_score: int | None = None
     uniqueness_score: int | None = None
@@ -105,15 +99,12 @@ def score_instructions(
         template=template,
     )
 
-    # Map stage-1 results by instruction text (order-preserving for duplicates:
-    # match by enumeration over the proposed list, not a dict collapse).
     scored_by_index: list[ScoredInstruction] = []
     for instruction, adh_score, adh_ok in adherence_items:
         if not adh_ok:
             scored_by_index.append(
                 ScoredInstruction(
                     instruction=instruction,
-                    score=adh_score,
                     accepted=False,
                     adherence_score=adh_score,
                     uniqueness_score=None,
@@ -121,11 +112,9 @@ def score_instructions(
                 )
             )
         else:
-            # Placeholder until uniqueness runs; indices among survivors only.
             scored_by_index.append(
                 ScoredInstruction(
                     instruction=instruction,
-                    score=adh_score,
                     accepted=True,  # may flip after uniqueness
                     adherence_score=adh_score,
                     uniqueness_score=None,
@@ -138,7 +127,7 @@ def score_instructions(
         return [], scored_by_index, raw
 
     # --- Stage 2: uniqueness on survivors only ---
-    uniqueness_accepted, uniqueness_items, uniqueness_raw = _score_batch(
+    _uniqueness_accepted, uniqueness_items, uniqueness_raw = _score_batch(
         judge=judge,
         generation_prompt=generation_prompt,
         images=images,
@@ -148,7 +137,6 @@ def score_instructions(
         threshold=uniq_threshold,
         template=uniqueness_template,
     )
-    # Pair uniqueness results with survivors in order (same order / length).
     survivor_iter = iter(uniqueness_items)
     for scored in scored_by_index:
         if scored.rejected_stage == "adherence":
@@ -158,7 +146,6 @@ def score_instructions(
         except StopIteration:
             break
         scored.uniqueness_score = uniq_score
-        scored.score = uniq_score if uniq_score is not None else scored.adherence_score
         if not uniq_ok:
             scored.accepted = False
             scored.rejected_stage = "uniqueness"

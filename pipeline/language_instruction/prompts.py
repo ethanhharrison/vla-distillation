@@ -270,10 +270,6 @@ Output exactly one line per candidate, in the same order, formatted as:
 Output nothing else — no explanations, headers, or extra text."""
 
 
-# Back-compat alias used by older call sites / configs.
-JUDGE_PROMPT = ADHERENCE_JUDGE_PROMPT
-
-
 def build_judge_prompt(
     generation_prompt: str,
     instructions: list[str],
