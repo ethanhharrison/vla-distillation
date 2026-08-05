@@ -1,0 +1,50 @@
+# Uniqueness by behavioural clustering over the MERGED set, instead of the
+# per-call 1-5 uniqueness score.
+#
+# Two differences from default_pipeline.yaml:
+#   defaults.uniqueness: false   -> the per-call stage-2 judge is off, so nothing
+#                                   is filtered twice under two definitions
+#   uniqueness.enabled: true     -> one clustering call after the merge
+#
+# Running it after the merge is the point: `merge_call_results` only collapses
+# byte-identical strings, so "Pick up the black cup" from one call and "Grab the
+# black mug" from another both survive into merged.txt today.
+#
+#   .venv/bin/python -m pipeline.language_instruction.pipeline \
+#       --config configs/language_instruction/uniqueness_cluster.yaml
+
+record: datasets/droid/success/success-00285.tfrecord
+example_index: 0
+# The clustering judge is shown these frames so it can resolve object references
+# ("the black mug" vs "the black cup") against the actual scene.
+save_images: true
+estimate_cost: true
+
+defaults:
+  provider: gemini
+  judge: true
+  judge_threshold: 4
+  uniqueness: false
+  max_steps: 1
+
+calls:
+  - name: default
+    prompt_template: default
+    num_instructions: 75
+  - name: long_horizon
+    prompt_template: long_horizon
+    num_instructions: 25
+  - name: precision
+    prompt_template: precision
+    num_instructions: 25
+
+uniqueness:
+  enabled: true
+  provider: gemini
+  # Same action, same objects, same *stated* destination; the image is used only
+  # to tell whether two descriptions name the same object. Compare alternatives
+  # with scripts/tune_uniqueness_prompt.py.
+  definition: semantic_groups
+
+postprocess:
+  enabled: false

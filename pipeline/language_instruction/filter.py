@@ -79,11 +79,17 @@ def score_instructions(
     template: str = ADHERENCE_JUDGE_PROMPT,
     uniqueness_template: str = UNIQUENESS_JUDGE_PROMPT,
     uniqueness_threshold: int | None = None,
+    uniqueness: bool = True,
 ) -> tuple[list[str], list[ScoredInstruction], str]:
     """Two-stage filter: adherence (all candidates) then uniqueness (survivors).
 
     `template` is the stage-1 adherence prompt. `uniqueness_template` is stage 2.
     `uniqueness_threshold` defaults to `threshold` when unset.
+
+    Set `uniqueness=False` to run adherence only. Use that when uniqueness is
+    handled elsewhere -- `uniqueness.cluster_instructions` runs once over the
+    merged set in pipeline.py -- so candidates are never filtered twice under
+    two different definitions of "duplicate".
     """
     uniq_threshold = threshold if uniqueness_threshold is None else uniqueness_threshold
 
@@ -122,9 +128,9 @@ def score_instructions(
                 )
             )
 
-    if not adherence_accepted:
+    if not uniqueness or not adherence_accepted:
         raw = f"--- adherence ---\n{adherence_raw}"
-        return [], scored_by_index, raw
+        return adherence_accepted, scored_by_index, raw
 
     # --- Stage 2: uniqueness on survivors only ---
     _uniqueness_accepted, uniqueness_items, uniqueness_raw = _score_batch(

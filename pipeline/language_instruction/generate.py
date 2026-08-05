@@ -52,6 +52,9 @@ class GenerationConfig:
     judge_prompt_template: str = ADHERENCE_JUDGE_PROMPT
     uniqueness_judge_prompt_template: str = UNIQUENESS_JUDGE_PROMPT
     uniqueness_threshold: int | None = None
+    #: Run the stage-2 uniqueness judge. Turn off when uniqueness is handled
+    #: over the merged set instead (pipeline.py + uniqueness.py).
+    uniqueness: bool = True
     estimate_cost: bool = False
 
 @dataclass
@@ -119,6 +122,7 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None, judg
                 template=config.judge_prompt_template,
                 uniqueness_template=config.uniqueness_judge_prompt_template,
                 uniqueness_threshold=config.uniqueness_threshold,
+                uniqueness=config.uniqueness,
             )
         else:
             accepted_instructions = proposed_instructions

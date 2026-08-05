@@ -30,6 +30,13 @@ from .prompts import (
     resolve_instruction_template,
 )
 from .trajectory import DEFAULT_CAMERAS
+from .uniqueness import (
+    DEFAULT_DEFINITION,
+    Clustering,
+    build_uniqueness_judge,
+    cluster_instructions,
+    resolve_definition,
+)
 from .vlm import VLM, build_vlm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +60,7 @@ CALL_OPTION_KEYS = frozenset(
         "judge_model",
         "judge_threshold",
         "uniqueness_threshold",
+        "uniqueness",
         "name",
     }
 )
@@ -74,6 +82,10 @@ class PipelineConfig:
     output_path: Path | None = None
     postprocess: dict[str, Any] = field(default_factory=dict)
     save_per_call: bool = True
+    #: Merge-time behavioural clustering (uniqueness.py). Keys: enabled,
+    #: provider, model. Runs once over the merged set, so unlike the per-call
+    #: stage-2 judge it also catches duplicates proposed by two different calls.
+    uniqueness: dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class CallResult:
@@ -92,6 +104,28 @@ class PipelineResult:
     trajectory_length: int = 0
     metadata: dict = field(default_factory=dict)
     image_paths_by_step: dict[int, dict[str, str]] = field(default_factory=dict)
+    #: step -> Clustering over that step's merged_by_step list (empty when the
+    #: merge-time uniqueness pass is disabled).
+    clustering_by_step: dict[int, Clustering] = field(default_factory=dict)
+
+    def representatives(self, step: int) -> list[str]:
+        """The kept instructions for a step: one per behaviour cluster."""
+        instructions = self.merged_by_step.get(step, [])
+        clustering = self.clustering_by_step.get(step)
+        if clustering is None:
+            return instructions
+        return [instructions[i] for i in clustering.representatives]
+
+    def duplicates(self, step: int) -> dict[str, str]:
+        """Dropped instruction -> the instruction it was folded into."""
+        instructions = self.merged_by_step.get(step, [])
+        clustering = self.clustering_by_step.get(step)
+        if clustering is None:
+            return {}
+        return {
+            instructions[member]: instructions[representative]
+            for member, representative in clustering.duplicate_of.items()
+        }
 
 # ---------------------------------------------------------------------------
 # Postprocess hook (stub; filter / paraphrase later)
@@ -237,6 +271,15 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
 
     save_per_call = bool(raw.get("save_per_call", True))
 
+    uniqueness = raw.get("uniqueness") or {}
+    if not isinstance(uniqueness, dict):
+        raise TypeError("`uniqueness` must be a mapping")
+    unknown_uniqueness = set(uniqueness) - {"enabled", "provider", "model", "definition"}
+    if unknown_uniqueness:
+        raise ValueError(
+            f"Unknown uniqueness option(s): {', '.join(sorted(unknown_uniqueness))}"
+        )
+
     calls: list[PipelineCallSpec] = []
     used_names: set[str] = set()
     for idx, call_raw in enumerate(calls_raw):
@@ -275,6 +318,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         output_path=output_path,
         postprocess=postprocess,
         save_per_call=save_per_call,
+        uniqueness=uniqueness,
     )
 
 # ---------------------------------------------------------------------------
@@ -316,6 +360,63 @@ def merge_call_results(calls: list[CallResult]) -> tuple[
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+
+def load_step_images(image_paths: dict[str, str]) -> list[bytes]:
+    """Read back the frames `save_frame` wrote, in camera order.
+
+    Unreadable or absent frames are skipped rather than fatal: the judge can
+    still cluster from the text, and `run_uniqueness` says so out loud.
+    """
+    images: list[bytes] = []
+    for path in image_paths.values():
+        try:
+            images.append(Path(path).read_bytes())
+        except OSError:
+            continue
+    return images
+
+
+def run_uniqueness(
+    config: PipelineConfig,
+    merged_by_step: dict[int, list[str]],
+    image_paths_by_step: dict[int, dict[str, str]],
+    trajectory_length: int,
+) -> dict[int, Clustering]:
+    """Cluster each step's merged instructions by behaviour; one judge call per step.
+
+    Runs over the *merged* set, so it sees duplicates proposed by different
+    generation calls — which `merge_call_results` cannot, since that only
+    collapses byte-identical strings.
+    """
+    settings = config.uniqueness
+    if not settings.get("enabled"):
+        return {}
+
+    definition_name, _ = resolve_definition(settings.get("definition", DEFAULT_DEFINITION))
+    judge = build_uniqueness_judge(settings.get("provider", "gemini"), settings.get("model"))
+    print(f"[uniqueness] Clustering merged instructions with {judge} "
+          f"(definition={definition_name!r}) ...")
+
+    clustering_by_step: dict[int, Clustering] = {}
+    for step, instructions in merged_by_step.items():
+        images = load_step_images(image_paths_by_step.get(step, {}))
+        if not images:
+            print(f"[uniqueness] step {step}: no frames on disk, judging from text alone "
+                  "(set save_images: true to ground object references)")
+        clustering = cluster_instructions(
+            judge=judge,
+            instructions=instructions,
+            images=images,
+            step=step,
+            total=trajectory_length,
+            definition=definition_name,
+        )
+        clustering_by_step[step] = clustering
+        print(f"[uniqueness] step {step}: {len(instructions)} -> "
+              f"{len(clustering.clusters)} instructions "
+              f"({clustering.num_duplicates} folded into a representative)")
+    return clustering_by_step
+
 
 def run_pipeline(
     config: PipelineConfig,
@@ -387,6 +488,7 @@ def run_pipeline(
         )
 
     merged, provenance, image_paths = merge_call_results(call_results)
+    clustering = run_uniqueness(config, merged, image_paths, trajectory_length)
     return PipelineResult(
         config=config,
         calls=call_results,
@@ -395,6 +497,7 @@ def run_pipeline(
         trajectory_length=trajectory_length,
         metadata=metadata,
         image_paths_by_step=image_paths,
+        clustering_by_step=clustering,
     )
 
 # ---------------------------------------------------------------------------
@@ -480,13 +583,24 @@ def write_pipeline_txt(result: PipelineResult, output_path: Path) -> Path:
             lines.append(f"  {key}: {value}")
     lines.append("=" * 60)
 
+    if result.config.uniqueness.get("enabled"):
+        lines.append(
+            f"uniqueness: clustered ({result.config.uniqueness.get('provider', 'gemini')}, "
+            f"definition={result.config.uniqueness.get('definition', DEFAULT_DEFINITION)})"
+        )
+
     for step, instructions in result.merged_by_step.items():
         lines.append(f"[step {step}]")
         step_prov = result.provenance.get(step, {})
-        for instruction in instructions:
+        duplicates = result.duplicates(step)
+        for instruction in result.representatives(step):
             sources = step_prov.get(instruction, [])
             suffix = f" | from: {', '.join(sources)}" if sources else ""
             lines.append(f"  - {instruction}{suffix}")
+        for instruction, representative in duplicates.items():
+            sources = step_prov.get(instruction, [])
+            suffix = f" | from: {', '.join(sources)}" if sources else ""
+            lines.append(f"  (duplicate) {instruction}{suffix} | duplicate of: {representative}")
         for camera, path in result.image_paths_by_step.get(step, {}).items():
             lines.append(f"  (image) {camera}: {path}")
         lines.append("")

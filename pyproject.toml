@@ -1,0 +1,9 @@
+# Test configuration only — this repo is run from a checkout (`python -m pipeline...`),
+# not installed, so there is deliberately no [project] / build-system section here.
+#
+#   .venv/bin/python -m pytest
+#
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -1,0 +1,88 @@
+# 76 merged instructions from a real 3-call pipeline run on success-00285 ep0
+# step 0 (default + long_horizon + precision). Kept as the PRECISION set: it
+# contains genuine cross-call duplicates (a precision "...10cm closer to the
+# clock" beside a default "...closer to the clock") next to trap pairs that must
+# stay separate -- same object, different stated destination:
+#   "Move the blue towel 10cm to the right towards the banana"
+#   "Move the blue towel closer to the clock"
+#
+# EXPECT DUPLICATE: Move the banana closer to the clock || Lift the banana and place it 10cm closer to the clock
+# EXPECT DISTINCT: Move the blue towel 10cm to the right towards the banana || Move the blue towel closer to the clock
+# EXPECT DISTINCT: Move the fork closer to the toaster oven || Slide the fork 8cm away from the plate of nuts
+# EXPECT DISTINCT: Slide the crumpled paper towel 12cm closer to the toaster oven || Tidy the workspace by moving the paper trash to the left
+Put the red container on the countertop
+Open the toaster oven door
+Close the toaster oven door
+Pick up the banana
+Move the banana to the sink
+Put the banana next to the coffee maker
+Pick up the orange bag
+Move the black measuring cup to the counter
+Lift the blue towel
+Put the blue towel next to the toaster oven
+Pick up the spoon from the counter
+Move the spoon next to the plate
+Put the spoon on the plate
+Pick up the fork from the counter
+Move the fork closer to the toaster oven
+Pick up the green packet
+Move the banana closer to the clock
+Move the green packet next to the banana
+Turn the knob on the toaster oven
+Touch the clock
+Put the green packet into the black measuring cup
+Put the banana into the toaster oven
+Place the spoon in the sink
+Place the fork in the sink
+Move the orange bag next to the clock
+Lift the plate
+Put the plate next to the sink
+Move the white bowl next to the coffee maker
+Pick up the napkin
+Throw the napkin next to the sink
+Put the napkin on the countertop next to the plate
+Touch the coffee maker
+Wipe the counter with the blue towel
+Move the red container to the right of the toaster oven
+Place the black measuring cup next to the red container
+Pick up the fork and put it on the plate
+Pick up the napkin and place it under the plate
+Put the banana on the plate
+Put the orange bag on the plate
+Move the clock to the left
+Put the green packet next to the clock
+Move the white bowl closer to the clock
+Place the green packet in the toaster oven
+Place the napkin in the toaster oven
+Touch the handle of the toaster oven
+Move the blue towel closer to the clock
+Place the red container on the white plate
+Lift the orange bag and put it on top of the toaster oven
+Put the spoon on top of the toaster oven
+Put the fork on top of the toaster oven
+Move the black measuring cup to the left of the toaster oven
+Put the green packet next to the toaster oven
+Move the spoon next to the orange bag
+Move the fork next to the spoon
+Push the clock back
+Pick up the plate and place it on top of the toaster oven
+Move the banana closer to the toaster oven
+Place the orange bag next to the banana
+Put the fork into the black measuring cup
+Put the spoon into the black measuring cup
+Lift the red container from the toaster oven
+Clean the counter by moving the utensils closer to the sink
+Prepare to make coffee by placing the black cup next to the coffee maker
+Gather the forks and spoon together next to the plate
+Clear the area directly in front of the toaster oven
+Tidy the workspace by moving the paper trash to the left
+Rotate the red container on top of the toaster oven 45 degrees clockwise
+Move the black measuring cup 15cm to the right on the countertop
+Pick up the green tea bag packet and place it 5cm to the left of the blue towel
+Lift the spoon and place it 2cm to the right of and parallel to the fork
+Slide the fork 8cm away from the plate of nuts
+Lift the banana and place it 10cm closer to the clock
+Clear the countertop by placing the green packets next to the clock
+Move the blue towel 10cm to the right towards the banana
+Set up a snack station by placing the banana and snack bag together
+Slide the crumpled paper towel 12cm closer to the toaster oven

@@ -1,0 +1,38 @@
+# 25 long_horizon candidates for success-00285 ep0 step 0, from a real run.
+# Kept as a fixed tuning set so definition changes are compared on the same input.
+# The last 7 are the ones the 1-5 uniqueness judge rejected; two of them --
+# "Put the dirty forks and spoons into the sink" and "Place the dirty silverware
+# and plate into the sink" -- are the motivating case: both were dropped, when
+# one should survive.
+#
+# EXPECT lines are provisional labels for the pairs we have actually reasoned
+# about -- edit or add freely, they are read by scripts/tune_uniqueness_prompt.py
+# and scored, not used in any prompt.
+# EXPECT DUPLICATE: Put the dirty forks and spoons into the sink || Place the dirty silverware and plate into the sink
+# EXPECT DUPLICATE: Organize the countertop to make more workspace || Tidy up the entire kitchen counter
+# EXPECT DISTINCT: Clear the top of the toaster oven || Put the red container in the kitchen cabinet
+Clear the dirty dishes and silverware from the counter
+Put the banana and plate of food away
+Move the coffee pot to the coffee maker
+Throw away the paper trash and packaging on the counter
+Clean the counter using the blue towel
+Pack the green packets into the cabinet
+Clear the top of the toaster oven
+Gather the kitchen tools and place them in the sink
+Put the red container in the kitchen cabinet
+Organize the countertop to make more workspace
+Set up the coffee machine for brewing
+Stack the plates and bowls together
+Wipe down the toaster oven surface
+Store the food items next to the toaster oven
+Transfer the snacks on the plate to the red container
+Clear the area around the coffee machine
+Move all items from the left side of the counter to the right side
+Group the food ingredients together on the counter
+Prepare the toaster oven to heat up food
+Place the dirty silverware and plate into the sink
+Clean the table surface and organize the dishes
+Put the measuring cup and red container away
+Put the dirty forks and spoons into the sink
+Place the blue towel and green packets in the drawer
+Tidy up the entire kitchen counter

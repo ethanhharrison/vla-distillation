@@ -30,7 +30,7 @@ ORIGINAL_INSTRUCTION_KEYS = (
 
 def _split_score(text: str) -> tuple[str, dict[str, str] | None]:
     """Split an instruction line into text + optional grade tags."""
-    known = ("adherence:", "uniqueness:", "stage:", "from:")
+    known = ("adherence:", "uniqueness:", "stage:", "from:", "duplicate of:")
     parts = text.split(" | ")
     if len(parts) == 1:
         return text.strip(), None
@@ -115,6 +115,9 @@ def parse_run(path: Path) -> dict:
         elif stripped.startswith("(rejected) ") and current is not None:
             text, grades = _split_score(stripped[len("(rejected) ") :])
             current["rejected"].append({"text": text, "grades": grades})
+        elif stripped.startswith("(duplicate) ") and current is not None:
+            text, grades = _split_score(stripped[len("(duplicate) ") :])
+            current["rejected"].append({"text": text, "grades": grades})
         elif stripped.startswith("(image) ") and current is not None:
             camera, _, image_path = stripped[len("(image) ") :].partition(": ")
             current["images"][camera] = image_path
@@ -140,7 +143,7 @@ def _embed_image(image_path: str) -> str:
 
 
 def _score_badge(grades: dict[str, str] | None, rejected: bool = False) -> str:
-    """Render adherence / uniqueness / stage / from badges."""
+    """Render adherence / uniqueness / stage / from / duplicate-of badges."""
     if not grades:
         return ""
 
@@ -161,6 +164,10 @@ def _score_badge(grades: dict[str, str] | None, rejected: bool = False) -> str:
     if "from" in grades:
         badges.append(
             f'<span class="{base}">from {html.escape(grades["from"])}</span>'
+        )
+    if "duplicate of" in grades:
+        badges.append(
+            f'<span class="{base}">duplicate of: {html.escape(grades["duplicate of"])}</span>'
         )
     if not badges:
         label = ", ".join(f"{k} {v}" for k, v in grades.items())
