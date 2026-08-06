@@ -1,4 +1,4 @@
-"""Wiring: the stage-2 off switch, and the merged output format round-trip."""
+"""Wiring: adherence-only filter, and the merged output format round-trip."""
 
 from __future__ import annotations
 
@@ -29,38 +29,31 @@ class CountingVLM(VLM):
 
     def generate(self, prompt: str, images: list[bytes]) -> str:
         self.calls += 1
-        count = sum(1 for line in prompt.splitlines() if line.strip()[:2].rstrip(".").isdigit())
+        count = sum(
+            1 for line in prompt.splitlines() if line.strip()[:2].rstrip(".").isdigit()
+        )
         self.usage.add(input_tokens=100, output_tokens=10)
         return "\n".join(f"{i}. 5" for i in range(1, max(count, 1) + 1))
 
 
-# --- the off switch -------------------------------------------------------- #
-
-
-def test_uniqueness_false_runs_adherence_only():
-    """Stage 2 must be skippable, or it double-filters with merge-time clustering."""
+def test_score_instructions_is_adherence_only():
+    """Per-call judge must not run a second uniqueness VLM pass."""
     judge = CountingVLM()
 
     accepted, scored, raw = score_instructions(
-        judge=judge, generation_prompt="p", images=[], instructions=INSTRUCTIONS,
-        step=0, total=10, threshold=3, uniqueness=False,
+        judge=judge,
+        generation_prompt="p",
+        images=[],
+        instructions=INSTRUCTIONS,
+        step=0,
+        total=10,
+        threshold=3,
     )
 
     assert judge.calls == 1
     assert accepted == INSTRUCTIONS
-    assert all(s.uniqueness_score is None for s in scored)
+    assert all(s.adherence_score == 5 for s in scored)
     assert "--- uniqueness ---" not in raw
-
-
-def test_uniqueness_defaults_to_on_so_existing_runs_are_unchanged():
-    judge = CountingVLM()
-
-    score_instructions(
-        judge=judge, generation_prompt="p", images=[], instructions=INSTRUCTIONS,
-        step=0, total=10, threshold=3,
-    )
-
-    assert judge.calls == 2
 
 
 # --- merged output --------------------------------------------------------- #
@@ -77,7 +70,12 @@ def make_result(clustering: Clustering | None) -> PipelineResult:
         config=config,
         calls=[],
         merged_by_step={0: list(INSTRUCTIONS)},
-        provenance={0: {"Pick up the banana": ["default"], "Lift the banana": ["precision"]}},
+        provenance={
+            0: {
+                "Pick up the banana": ["default"],
+                "Lift the banana": ["precision"],
+            }
+        },
         clustering_by_step={0: clustering} if clustering is not None else {},
     )
 
@@ -104,7 +102,10 @@ def test_merged_txt_records_what_each_duplicate_was_folded_into(tmp_path):
 
     assert "- Pick up the banana | from: default" in lines
     assert "- Grab the black mug" in lines
-    assert "(duplicate) Lift the banana | from: precision | duplicate of: Pick up the banana" in lines
+    assert (
+        "(duplicate) Lift the banana | from: precision | duplicate of: Pick up the banana"
+        in lines
+    )
 
 
 def test_the_visualizer_can_parse_the_line_the_pipeline_writes(tmp_path):
@@ -113,7 +114,8 @@ def test_the_visualizer_can_parse_the_line_the_pipeline_writes(tmp_path):
     path = write_pipeline_txt(result, tmp_path / "merged.txt")
 
     line = next(
-        line.strip() for line in path.read_text().splitlines()
+        line.strip()
+        for line in path.read_text().splitlines()
         if line.strip().startswith("(duplicate) ")
     )
     text, grades = _split_score(line[len("(duplicate) ") :])

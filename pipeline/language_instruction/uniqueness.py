@@ -1,9 +1,8 @@
 """Behavioural-uniqueness clustering for a merged instruction set.
 
-Where `UNIQUENESS_JUDGE_PROMPT` (filter.py, stage 2) scores each candidate 1-5
-for "is this a rewording of something else?", this module asks a different
-question and returns a different shape: it partitions the whole instruction list
-into **behaviour clusters** and keeps one representative per cluster.
+Where the per-call adherence judge only checks feasibility/style,
+this module partitions the whole instruction list into **behaviour clusters**
+and keeps one representative per cluster.
 
 Two instructions are duplicates iff executing each in this scene would leave the
 world in substantially the same end state. That is a stronger claim than

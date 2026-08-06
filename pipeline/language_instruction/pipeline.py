@@ -26,7 +26,6 @@ from .pricing import RunCost
 from .prompts import (
     ADHERENCE_JUDGE_PROMPT,
     DEFAULT_TEMPLATE,
-    UNIQUENESS_JUDGE_PROMPT,
     resolve_instruction_template,
 )
 from .trajectory import DEFAULT_CAMERAS
@@ -59,8 +58,6 @@ CALL_OPTION_KEYS = frozenset(
         "judge_provider",
         "judge_model",
         "judge_threshold",
-        "uniqueness_threshold",
-        "uniqueness",
         "name",
     }
 )
@@ -220,12 +217,6 @@ def generation_from_merged(
         judge_model=merged.get("judge_model"),
         judge_threshold=int(merged.get("judge_threshold", 3)),
         judge_prompt_template=ADHERENCE_JUDGE_PROMPT,
-        uniqueness_judge_prompt_template=UNIQUENESS_JUDGE_PROMPT,
-        uniqueness_threshold=(
-            int(merged["uniqueness_threshold"])
-            if merged.get("uniqueness_threshold") is not None
-            else None
-        ),
         estimate_cost=estimate_cost,
     )
 

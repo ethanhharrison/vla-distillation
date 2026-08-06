@@ -1,14 +1,8 @@
-# Uniqueness by behavioural clustering over the MERGED set, instead of the
-# per-call 1-5 uniqueness score.
+# Uniqueness by behavioural clustering over the MERGED set.
 #
-# Two differences from default_pipeline.yaml:
-#   defaults.uniqueness: false   -> the per-call stage-2 judge is off, so nothing
-#                                   is filtered twice under two definitions
-#   uniqueness.enabled: true     -> one clustering call after the merge
-#
-# Running it after the merge is the point: `merge_call_results` only collapses
-# byte-identical strings, so "Pick up the black cup" from one call and "Grab the
-# black mug" from another both survive into merged.txt today.
+# Per-call filtering uses only the adherence judge. After all calls are merged,
+# uniqueness.enabled runs one clustering pass (pipeline.language_instruction.uniqueness)
+# so near-duplicates across calls are folded, not just exact string matches.
 #
 #   .venv/bin/python -m pipeline.language_instruction.pipeline \
 #       --config configs/language_instruction/uniqueness_cluster.yaml
@@ -24,7 +18,6 @@ defaults:
   provider: gemini
   judge: true
   judge_threshold: 4
-  uniqueness: false
   max_steps: 1
 
 calls:

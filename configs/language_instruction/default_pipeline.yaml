@@ -9,7 +9,6 @@ defaults:
   provider: gemini
   judge: true
   judge_threshold: 4
-  uniqueness_threshold: 3
   max_steps: 1
 
 calls:

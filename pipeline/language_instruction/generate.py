@@ -18,7 +18,6 @@ from .prompts import (
     DEFAULT_TEMPLATE,
     INSTRUCTION_PROMPT,
     INSTRUCTION_TEMPLATES,
-    UNIQUENESS_JUDGE_PROMPT,
     build_prompt,
     parse_instructions,
     resolve_instruction_template,
@@ -50,11 +49,6 @@ class GenerationConfig:
     judge_model: str | None = None
     judge_threshold: int = 3
     judge_prompt_template: str = ADHERENCE_JUDGE_PROMPT
-    uniqueness_judge_prompt_template: str = UNIQUENESS_JUDGE_PROMPT
-    uniqueness_threshold: int | None = None
-    #: Run the stage-2 uniqueness judge. Turn off when uniqueness is handled
-    #: over the merged set instead (pipeline.py + uniqueness.py).
-    uniqueness: bool = True
     estimate_cost: bool = False
 
 @dataclass
@@ -120,9 +114,6 @@ def generate_instructions(config: GenerationConfig, vlm: VLM | None = None, judg
                 total=trajectory.length,
                 threshold=config.judge_threshold,
                 template=config.judge_prompt_template,
-                uniqueness_template=config.uniqueness_judge_prompt_template,
-                uniqueness_threshold=config.uniqueness_threshold,
-                uniqueness=config.uniqueness,
             )
         else:
             accepted_instructions = proposed_instructions
@@ -237,13 +228,7 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
         lines.append(f"judge_provider: {judge_provider}")
         lines.append(f"judge_model: {judge_model}")
         lines.append(f"judge_threshold: {config.judge_threshold}")
-        uniq_thr = (
-            config.uniqueness_threshold
-            if config.uniqueness_threshold is not None
-            else config.judge_threshold
-        )
-        lines.append(f"uniqueness_threshold: {uniq_thr}")
-        lines.append("judge_stages: adherence, uniqueness")
+        lines.append("judge_stages: adherence")
     if config.estimate_cost:
         lines.extend(cost_report_lines(build_run_cost(result, vlm, judge)))
     if result.metadata:
@@ -262,8 +247,6 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
                 parts = []
                 if scored.adherence_score is not None:
                     parts.append(f"adherence: {scored.adherence_score}")
-                if scored.uniqueness_score is not None:
-                    parts.append(f"uniqueness: {scored.uniqueness_score}")
                 if parts:
                     suffix = " | " + " | ".join(parts)
             lines.append(f"  - {instruction}{suffix}")
@@ -272,10 +255,6 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
                 parts = []
                 if scored.adherence_score is not None:
                     parts.append(f"adherence: {scored.adherence_score}")
-                if scored.uniqueness_score is not None:
-                    parts.append(f"uniqueness: {scored.uniqueness_score}")
-                if scored.rejected_stage:
-                    parts.append(f"stage: {scored.rejected_stage}")
                 detail = " | ".join(parts) if parts else "?"
                 lines.append(f"  (rejected) {scored.instruction} | {detail}")
         for camera, path in step_result.image_paths.items():
@@ -305,7 +284,6 @@ def build_config_from_args(args: argparse.Namespace) -> GenerationConfig:
         judge_provider=args.judge_provider,
         judge_model=args.judge_model,
         judge_threshold=args.judge_threshold,
-        uniqueness_threshold=args.uniqueness_threshold,
         estimate_cost=args.estimate_cost,
     )
 
@@ -379,8 +357,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--judge",
         action="store_true",
-        help="Score each candidate with a two-stage VLM judge (adherence, "
-        "then uniqueness on survivors) and drop low-scoring ones.",
+        help="Score each candidate with an adherence VLM judge and drop "
+        "low-scoring ones. Uniqueness is not judged here (use the multi-call "
+        "pipeline uniqueness block for that).",
     )
     parser.add_argument(
         "--judge-provider",
@@ -397,14 +376,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--judge-threshold",
         type=int,
         default=3,
-        help="Minimum stage-1 adherence score (1-5) required to keep a candidate "
-        "for the uniqueness pass.",
-    )
-    parser.add_argument(
-        "--uniqueness-threshold",
-        type=int,
-        default=None,
-        help="Minimum stage-2 uniqueness score (1-5). Defaults to --judge-threshold.",
+        help="Minimum adherence score (1-5) required to keep an instruction.",
     )
     parser.add_argument(
         "--estimate-cost",
