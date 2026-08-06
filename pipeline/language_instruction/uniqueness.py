@@ -1,8 +1,8 @@
-"""Behavioural-uniqueness clustering for a merged instruction set.
+"""Behavioural-uniqueness clustering for instruction lists.
 
-Where the per-call adherence judge only checks feasibility/style,
-this module partitions the whole instruction list into **behaviour clusters**
-and keeps one representative per cluster.
+Where the per-call adherence judge only checks feasibility/style, this module
+partitions an instruction list into **behaviour clusters** and keeps one
+representative per cluster.
 
 Two instructions are duplicates iff executing each in this scene would leave the
 world in substantially the same end state. That is a stronger claim than
@@ -19,9 +19,10 @@ Why a partition rather than a per-instruction score:
   exactly once or it does not, so a judge that hallucinates, doubles or drops an
   index fails loudly here rather than silently passing the instruction through.
 
-It runs once over the *merged* set (pipeline.py), after all generation calls, so
-it also catches duplicates proposed by two different calls — which `exact string
-equality` in `merge_call_results` cannot.
+Pipeline can run this **before** merge (each generate call independently) or
+**after** merge (once over the unified list). `cluster_instructions` is the
+single-list API; `cluster_by_step` walks a step->instructions map (merge-time).
+Mutation of `StepInstructions` lives in `generate.apply_uniqueness_to_steps`.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .vlm import VLM, build_vlm
 
@@ -447,3 +449,71 @@ def cluster_instructions(
         clusters=parse_clusters(raw_response, len(instructions)),
         raw_response=raw_response,
     )
+
+
+def load_step_images(image_paths: dict[str, str]) -> list[bytes]:
+    """Read back frames from paths (camera order), skipping unreadable files."""
+    images: list[bytes] = []
+    for path in image_paths.values():
+        try:
+            images.append(Path(path).read_bytes())
+        except OSError:
+            continue
+    return images
+
+
+def apply_clustering(
+    instructions: list[str],
+    clustering: Clustering,
+) -> tuple[list[str], dict[str, str]]:
+    """Return (representatives, dropped->representative) for a clustered list."""
+    reps = [instructions[i] for i in clustering.representatives]
+    dups = {
+        instructions[member]: instructions[representative]
+        for member, representative in clustering.duplicate_of.items()
+    }
+    return reps, dups
+
+
+def cluster_by_step(
+    instructions_by_step: dict[int, list[str]],
+    image_paths_by_step: dict[int, dict[str, str]],
+    *,
+    judge: VLM,
+    trajectory_length: int,
+    definition: str = DEFAULT_DEFINITION,
+    label: str = "uniqueness",
+) -> dict[int, Clustering]:
+    """Cluster each step's instruction list; one judge call per step with ≥2 items.
+
+    Does not mutate `instructions_by_step`. Callers that want only
+    representatives should use `apply_clustering` on each list.
+    """
+    clustering_by_step: dict[int, Clustering] = {}
+    for step, instructions in instructions_by_step.items():
+        if len(instructions) < 2:
+            clustering_by_step[step] = Clustering(
+                clusters=[[i] for i in range(len(instructions))]
+            )
+            continue
+        images = load_step_images(image_paths_by_step.get(step, {}))
+        if not images:
+            print(
+                f"[{label}] step {step}: no frames on disk, judging from text alone "
+                "(set save_images: true to ground object references)"
+            )
+        clustering = cluster_instructions(
+            judge=judge,
+            instructions=instructions,
+            images=images,
+            step=step,
+            total=trajectory_length,
+            definition=definition,
+        )
+        clustering_by_step[step] = clustering
+        print(
+            f"[{label}] step {step}: {len(instructions)} -> "
+            f"{len(clustering.clusters)} instructions "
+            f"({clustering.num_duplicates} folded into a representative)"
+        )
+    return clustering_by_step

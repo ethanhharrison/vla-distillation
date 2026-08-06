@@ -18,6 +18,7 @@ from .generate import (
     GenerationConfig,
     GenerationResult,
     StepInstructions,
+    apply_uniqueness_to_steps,
     build_run_cost,
     generate_instructions,
     write_txt,
@@ -33,7 +34,7 @@ from .uniqueness import (
     DEFAULT_DEFINITION,
     Clustering,
     build_uniqueness_judge,
-    cluster_instructions,
+    cluster_by_step,
     resolve_definition,
 )
 from .vlm import VLM, build_vlm
@@ -79,9 +80,6 @@ class PipelineConfig:
     output_path: Path | None = None
     postprocess: dict[str, Any] = field(default_factory=dict)
     save_per_call: bool = True
-    #: Merge-time behavioural clustering (uniqueness.py). Keys: enabled,
-    #: provider, model. Runs once over the merged set, so unlike the per-call
-    #: stage-2 judge it also catches duplicates proposed by two different calls.
     uniqueness: dict[str, Any] = field(default_factory=dict)
 
 @dataclass
@@ -91,6 +89,7 @@ class CallResult:
     vlm: VLM
     judge: VLM | None
     steps: list[StepInstructions]
+    clustering_by_step: dict[int, Clustering] = field(default_factory=dict)
 
 @dataclass
 class PipelineResult:
@@ -101,8 +100,6 @@ class PipelineResult:
     trajectory_length: int = 0
     metadata: dict = field(default_factory=dict)
     image_paths_by_step: dict[int, dict[str, str]] = field(default_factory=dict)
-    #: step -> Clustering over that step's merged_by_step list (empty when the
-    #: merge-time uniqueness pass is disabled).
     clustering_by_step: dict[int, Clustering] = field(default_factory=dict)
 
     def representatives(self, step: int) -> list[str]:
@@ -265,11 +262,20 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     uniqueness = raw.get("uniqueness") or {}
     if not isinstance(uniqueness, dict):
         raise TypeError("`uniqueness` must be a mapping")
-    unknown_uniqueness = set(uniqueness) - {"enabled", "provider", "model", "definition"}
+    unknown_uniqueness = set(uniqueness) - {
+        "enabled",
+        "when",
+        "provider",
+        "model",
+        "definition",
+    }
     if unknown_uniqueness:
         raise ValueError(
             f"Unknown uniqueness option(s): {', '.join(sorted(unknown_uniqueness))}"
         )
+    # Validate `when` early so a typo fails before any API work.
+    if uniqueness.get("enabled"):
+        resolve_uniqueness_when(uniqueness)
 
     calls: list[PipelineCallSpec] = []
     used_names: set[str] = set()
@@ -352,61 +358,24 @@ def merge_call_results(calls: list[CallResult]) -> tuple[
 # Run
 # ---------------------------------------------------------------------------
 
-def load_step_images(image_paths: dict[str, str]) -> list[bytes]:
-    """Read back the frames `save_frame` wrote, in camera order.
+UNIQUENESS_WHEN = frozenset({"before", "after"})
 
-    Unreadable or absent frames are skipped rather than fatal: the judge can
-    still cluster from the text, and `run_uniqueness` says so out loud.
+
+def resolve_uniqueness_when(settings: dict[str, Any] | None) -> str | None:
+    """Return `before` | `after`, or None when uniqueness is disabled.
+
+    `before` — cluster each generate call's survivors independently (pre-merge).
+    `after`  — cluster the unified list once after merge (default).
     """
-    images: list[bytes] = []
-    for path in image_paths.values():
-        try:
-            images.append(Path(path).read_bytes())
-        except OSError:
-            continue
-    return images
-
-
-def run_uniqueness(
-    config: PipelineConfig,
-    merged_by_step: dict[int, list[str]],
-    image_paths_by_step: dict[int, dict[str, str]],
-    trajectory_length: int,
-) -> dict[int, Clustering]:
-    """Cluster each step's merged instructions by behaviour; one judge call per step.
-
-    Runs over the *merged* set, so it sees duplicates proposed by different
-    generation calls — which `merge_call_results` cannot, since that only
-    collapses byte-identical strings.
-    """
-    settings = config.uniqueness
+    settings = settings or {}
     if not settings.get("enabled"):
-        return {}
-
-    definition_name, _ = resolve_definition(settings.get("definition", DEFAULT_DEFINITION))
-    judge = build_uniqueness_judge(settings.get("provider", "gemini"), settings.get("model"))
-    print(f"[uniqueness] Clustering merged instructions with {judge} "
-          f"(definition={definition_name!r}) ...")
-
-    clustering_by_step: dict[int, Clustering] = {}
-    for step, instructions in merged_by_step.items():
-        images = load_step_images(image_paths_by_step.get(step, {}))
-        if not images:
-            print(f"[uniqueness] step {step}: no frames on disk, judging from text alone "
-                  "(set save_images: true to ground object references)")
-        clustering = cluster_instructions(
-            judge=judge,
-            instructions=instructions,
-            images=images,
-            step=step,
-            total=trajectory_length,
-            definition=definition_name,
+        return None
+    when = str(settings.get("when", "after")).lower()
+    if when not in UNIQUENESS_WHEN:
+        raise ValueError(
+            f"uniqueness.when must be one of {sorted(UNIQUENESS_WHEN)}, got {when!r}"
         )
-        clustering_by_step[step] = clustering
-        print(f"[uniqueness] step {step}: {len(instructions)} -> "
-              f"{len(clustering.clusters)} instructions "
-              f"({clustering.num_duplicates} folded into a representative)")
-    return clustering_by_step
+    return when
 
 
 def run_pipeline(
@@ -415,6 +384,22 @@ def run_pipeline(
 ) -> PipelineResult:
     if postprocessor is None:
         postprocessor = build_postprocessor(config.postprocess)
+
+    when = resolve_uniqueness_when(config.uniqueness)
+    uniqueness_judge: VLM | None = None
+    uniqueness_definition = DEFAULT_DEFINITION
+    if when is not None:
+        uniqueness_definition, _ = resolve_definition(
+            config.uniqueness.get("definition", DEFAULT_DEFINITION)
+        )
+        uniqueness_judge = build_uniqueness_judge(
+            config.uniqueness.get("provider", "gemini"),
+            config.uniqueness.get("model"),
+        )
+        print(
+            f"[uniqueness] enabled (when={when!r}, definition={uniqueness_definition!r}) "
+            f"with {uniqueness_judge}"
+        )
 
     call_results: list[CallResult] = []
     trajectory_length = 0
@@ -461,7 +446,18 @@ def run_pipeline(
                 )
             )
 
-        # Patch generation.steps so per-call write_txt reflects postprocess.
+        call_clustering: dict[int, Clustering] = {}
+        if when == "before" and uniqueness_judge is not None:
+            print(f"[{call_spec.name}] Clustering uniqueness before merge ...")
+            call_clustering = apply_uniqueness_to_steps(
+                processed_steps,
+                judge=uniqueness_judge,
+                trajectory_length=trajectory_length,
+                definition=uniqueness_definition,
+                label=f"uniqueness/{call_spec.name}",
+            )
+
+        # Patch generation.steps so per-call write_txt reflects postprocess + uniqueness.
         generation.steps = processed_steps
         call_results.append(
             CallResult(
@@ -470,6 +466,7 @@ def run_pipeline(
                 vlm=vlm,
                 judge=judge,
                 steps=processed_steps,
+                clustering_by_step=call_clustering,
             )
         )
         n_acc = sum(len(s.instructions) for s in processed_steps)
@@ -479,7 +476,16 @@ def run_pipeline(
         )
 
     merged, provenance, image_paths = merge_call_results(call_results)
-    clustering = run_uniqueness(config, merged, image_paths, trajectory_length)
+    clustering: dict[int, Clustering] = {}
+    if when == "after" and uniqueness_judge is not None:
+        clustering = cluster_by_step(
+            merged,
+            image_paths,
+            judge=uniqueness_judge,
+            trajectory_length=trajectory_length,
+            definition=uniqueness_definition,
+            label="uniqueness/after",
+        )
     return PipelineResult(
         config=config,
         calls=call_results,
@@ -575,8 +581,10 @@ def write_pipeline_txt(result: PipelineResult, output_path: Path) -> Path:
     lines.append("=" * 60)
 
     if result.config.uniqueness.get("enabled"):
+        when = result.config.uniqueness.get("when", "after")
         lines.append(
-            f"uniqueness: clustered ({result.config.uniqueness.get('provider', 'gemini')}, "
+            f"uniqueness: clustered when={when} "
+            f"({result.config.uniqueness.get('provider', 'gemini')}, "
             f"definition={result.config.uniqueness.get('definition', DEFAULT_DEFINITION)})"
         )
 

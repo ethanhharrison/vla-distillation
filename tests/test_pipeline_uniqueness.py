@@ -1,4 +1,4 @@
-"""Wiring: adherence-only filter, and the merged output format round-trip."""
+"""Wiring: adherence-only filter, uniqueness when modes, merged output round-trip."""
 
 from __future__ import annotations
 
@@ -6,9 +6,14 @@ import sys
 from pathlib import Path
 
 from pipeline.language_instruction.filter import score_instructions
+from pipeline.language_instruction.generate import (
+    StepInstructions,
+    apply_uniqueness_to_steps,
+)
 from pipeline.language_instruction.pipeline import (
     PipelineConfig,
     PipelineResult,
+    resolve_uniqueness_when,
     write_pipeline_txt,
 )
 from pipeline.language_instruction.uniqueness import Clustering
@@ -36,6 +41,18 @@ class CountingVLM(VLM):
         return "\n".join(f"{i}. 5" for i in range(1, max(count, 1) + 1))
 
 
+class ClusteringVLM(VLM):
+    """Folds the last instruction into the first cluster (2 clusters for 3 items)."""
+
+    def __init__(self):
+        super().__init__("cluster-scripted")
+        self.calls = 0
+
+    def generate(self, prompt: str, images: list[bytes]) -> str:
+        self.calls += 1
+        return '{"clusters": [[1, 3], [2]]}'
+
+
 def test_score_instructions_is_adherence_only():
     """Per-call judge must not run a second uniqueness VLM pass."""
     judge = CountingVLM()
@@ -56,6 +73,44 @@ def test_score_instructions_is_adherence_only():
     assert "--- uniqueness ---" not in raw
 
 
+def test_resolve_uniqueness_when():
+    assert resolve_uniqueness_when({}) is None
+    assert resolve_uniqueness_when({"enabled": False}) is None
+    assert resolve_uniqueness_when({"enabled": True}) == "after"
+    assert resolve_uniqueness_when({"enabled": True, "when": "before"}) == "before"
+    assert resolve_uniqueness_when({"enabled": True, "when": "after"}) == "after"
+    try:
+        resolve_uniqueness_when({"enabled": True, "when": "both"})
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    try:
+        resolve_uniqueness_when({"enabled": True, "when": "per_call"})
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_apply_uniqueness_to_steps_keeps_reps_and_records_duplicates():
+    judge = ClusteringVLM()
+    steps = [
+        StepInstructions(step=0, instructions=list(INSTRUCTIONS)),
+    ]
+    by_step = apply_uniqueness_to_steps(
+        steps,
+        judge=judge,
+        trajectory_length=10,
+        definition="semantic_groups",
+        label="uniqueness/test",
+    )
+    assert judge.calls == 1
+    assert steps[0].instructions == ["Pick up the banana", "Grab the black mug"]
+    assert steps[0].cluster_duplicates == {
+        "Lift the banana": "Pick up the banana",
+    }
+    assert 0 in by_step
+
+
 # --- merged output --------------------------------------------------------- #
 
 
@@ -64,7 +119,11 @@ def make_result(clustering: Clustering | None) -> PipelineResult:
         config_path=Path("cfg.yaml"),
         record_path=Path("rec.tfrecord"),
         calls=[],
-        uniqueness={"enabled": clustering is not None, "provider": "gemini"},
+        uniqueness={
+            "enabled": clustering is not None,
+            "provider": "gemini",
+            "when": "after",
+        },
     )
     return PipelineResult(
         config=config,
@@ -100,6 +159,7 @@ def test_merged_txt_records_what_each_duplicate_was_folded_into(tmp_path):
     path = write_pipeline_txt(result, tmp_path / "merged.txt")
     lines = [line.strip() for line in path.read_text().splitlines()]
 
+    assert any("uniqueness: clustered when=after" in line for line in lines)
     assert "- Pick up the banana | from: default" in lines
     assert "- Grab the black mug" in lines
     assert (

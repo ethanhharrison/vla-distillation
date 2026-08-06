@@ -23,6 +23,12 @@ from .prompts import (
     resolve_instruction_template,
 )
 from .trajectory import DEFAULT_CAMERAS, Trajectory, load_trajectory
+from .uniqueness import (
+    Clustering,
+    apply_clustering,
+    cluster_instructions,
+    load_step_images,
+)
 from .vlm import VLM, available_providers, build_vlm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +66,7 @@ class StepInstructions:
     image_paths: dict[str, str] = field(default_factory=dict)
     scored: list[ScoredInstruction] = field(default_factory=list)
     judge_raw_response: str = ""
+    cluster_duplicates: dict[str, str] = field(default_factory=dict)
 
 @dataclass
 class GenerationResult:
@@ -67,6 +74,54 @@ class GenerationResult:
     trajectory_length: int
     metadata: dict
     steps: list[StepInstructions] = field(default_factory=list)
+
+
+def apply_uniqueness_to_steps(
+    steps: list[StepInstructions],
+    *,
+    judge: VLM,
+    trajectory_length: int,
+    definition: str,
+    label: str = "uniqueness",
+) -> dict[int, Clustering]:
+    """Cluster each step's accepted instructions in place.
+
+    Keeps representatives in `step.instructions` and records folded pairs in
+    `step.cluster_duplicates`. Returns step -> Clustering for provenance.
+    """
+    clustering_by_step: dict[int, Clustering] = {}
+    for step_result in steps:
+        instructions = step_result.instructions
+        if len(instructions) < 2:
+            clustering_by_step[step_result.step] = Clustering(
+                clusters=[[i] for i in range(len(instructions))]
+            )
+            continue
+        images = load_step_images(step_result.image_paths)
+        if not images:
+            print(
+                f"[{label}] step {step_result.step}: no frames on disk, "
+                "judging from text alone (set save_images: true to ground object references)"
+            )
+        clustering = cluster_instructions(
+            judge=judge,
+            instructions=instructions,
+            images=images,
+            step=step_result.step,
+            total=trajectory_length,
+            definition=definition,
+        )
+        clustering_by_step[step_result.step] = clustering
+        reps, dups = apply_clustering(instructions, clustering)
+        print(
+            f"[{label}] step {step_result.step}: "
+            f"{len(instructions)} -> {len(reps)} "
+            f"({clustering.num_duplicates} folded into a representative)"
+        )
+        step_result.instructions = reps
+        step_result.cluster_duplicates = dups
+    return clustering_by_step
+
 
 def generate_instructions(config: GenerationConfig, vlm: VLM | None = None, judge: VLM | None = None) -> GenerationResult:
     """Run the generation pipeline for one trajectory."""
@@ -257,6 +312,10 @@ def write_txt(result: GenerationResult, vlm: VLM, output_path: Path, judge: VLM 
                     parts.append(f"adherence: {scored.adherence_score}")
                 detail = " | ".join(parts) if parts else "?"
                 lines.append(f"  (rejected) {scored.instruction} | {detail}")
+        for instruction, representative in step_result.cluster_duplicates.items():
+            lines.append(
+                f"  (duplicate) {instruction} | duplicate of: {representative}"
+            )
         for camera, path in step_result.image_paths.items():
             lines.append(f"  (image) {camera}: {path}")
         lines.append("")

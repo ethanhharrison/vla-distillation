@@ -1,8 +1,10 @@
 # Uniqueness by behavioural clustering over the MERGED set.
 #
-# Per-call filtering uses only the adherence judge. After all calls are merged,
-# uniqueness.enabled runs one clustering pass (pipeline.language_instruction.uniqueness)
-# so near-duplicates across calls are folded, not just exact string matches.
+# Per-call filtering uses only the adherence judge. Then uniqueness runs depending
+# on `uniqueness.when`:
+#   before — cluster each generate call's survivors (before merge)
+#   after  — cluster the unified list once after merge (default; catches
+#            near-duplicates across different calls)
 #
 #   .venv/bin/python -m pipeline.language_instruction.pipeline \
 #       --config configs/language_instruction/uniqueness_cluster.yaml
@@ -33,6 +35,8 @@ calls:
 
 uniqueness:
   enabled: true
+  # One of: before | after
+  when: before
   provider: gemini
   # Same action, same objects, same *stated* destination; the image is used only
   # to tell whether two descriptions name the same object. Compare alternatives
