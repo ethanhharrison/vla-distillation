@@ -258,6 +258,50 @@ def build_judge_prompt(
     )
 
 
+AUGMENT_PROMPT = """You are expanding a robot manipulation instruction dataset.
+
+Below is a list of short imperative instructions. For EACH seed instruction, \
+write new variants that keep the same intended task (same action, same objects, \
+same goal) but change the surface form. Per seed, produce exactly:
+- {paraphrases_per_instruction} clean paraphrase(s) — different wording or \
+synonyms, still grammatical.
+- {noisy_per_instruction} noisy rewrite(s) — include realistic human mistakes: \
+misspellings, grammar errors, missing words, informal phrasing, or awkward \
+wording a non-native speaker or rushed annotator might produce. Keep the \
+intended meaning recoverable; do not invent new objects or change the task.
+
+If a count is 0, emit none of that kind for every seed.
+
+Guidelines:
+- Do NOT repeat any seed instruction verbatim.
+- Do NOT invent new tasks; only rephrase / noisily rewrite the seeds.
+- For each seed, first emit a header line exactly like `--- seed N ---` where \
+N is the 1-based seed number below, then that seed's clean paraphrases (if \
+any), then its noisy rewrites (if any), one instruction per line.
+- Do not number, bullet, or otherwise label the variant lines themselves — \
+only the `--- seed N ---` headers.
+
+Seed instructions:
+{numbered_instructions}"""
+
+
+def build_augment_prompt(
+    instructions: list[str],
+    paraphrases_per_instruction: int,
+    noisy_per_instruction: int,
+    template: str = AUGMENT_PROMPT,
+) -> str:
+    """Render the post-merge paraphrase / noisy-variant prompt."""
+    numbered = "\n".join(
+        f"{i}. {text}" for i, text in enumerate(instructions, start=1)
+    )
+    return template.format(
+        paraphrases_per_instruction=paraphrases_per_instruction,
+        noisy_per_instruction=noisy_per_instruction,
+        numbered_instructions=numbered,
+    )
+
+
 SCORE_LINE = re.compile(r"(\d+)\D+(\d+)")
 SINGLE_INT = re.compile(r"-?\d+")
 

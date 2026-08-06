@@ -11,8 +11,6 @@
 
 record: datasets/droid/success/success-00285.tfrecord
 example_index: 0
-# The clustering judge is shown these frames so it can resolve object references
-# ("the black mug" vs "the black cup") against the actual scene.
 save_images: true
 estimate_cost: true
 
@@ -35,13 +33,14 @@ calls:
 
 uniqueness:
   enabled: true
-  # One of: before | after
   when: before
   provider: gemini
-  # Same action, same objects, same *stated* destination; the image is used only
-  # to tell whether two descriptions name the same object. Compare alternatives
-  # with scripts/tune_uniqueness_prompt.py.
   definition: semantic_groups
 
-postprocess:
-  enabled: false
+# After merge (+ uniqueness): grow the kept list with paraphrases and noisy
+# rewrites (misspellings, grammar errors). Text-only; no scene frames.
+augment:
+  enabled: true
+  provider: gemini
+  paraphrases_per_instruction: 2
+  noisy_per_instruction: 1

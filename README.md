@@ -141,9 +141,9 @@ uv run python -m pipeline.language_instruction.pipeline \
 
 Each entry under `calls` is a full Stage A generate (optional judge). Calls do
 **not** share an avoid-list; results are merged and string-deduped by step.
-Optional shared defaults live under `defaults:`. A `postprocess:` block is
-reserved for a future text-only LLM filter/paraphrase step after each call — set
-`enabled: false` for now.
+Optional shared defaults live under `defaults:`. An `augment:` block can grow
+the kept list after merge with paraphrases and noisy variants — set
+`enabled: false` to skip.
 
 Outputs go under `outputs/language_instructions/<record>_pipeline_<timestamp>/`
 (`merged.txt` plus per-call dumps). Override with top-level `output:` or

@@ -4,13 +4,20 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from .augment import (
+    AUGMENT_KEYS,
+    build_augmenter,
+    expand_instructions,
+    flatten_augment_groups,
+    resolve_augment_counts,
+)
 from .filter import build_judge
 from .generate import (
     DEFAULT_IMAGE_DIR,
@@ -78,7 +85,7 @@ class PipelineConfig:
     image_dir: Path | None = None
     estimate_cost: bool = False
     output_path: Path | None = None
-    postprocess: dict[str, Any] = field(default_factory=dict)
+    augment: dict[str, Any] = field(default_factory=dict)
     save_per_call: bool = True
     uniqueness: dict[str, Any] = field(default_factory=dict)
 
@@ -101,6 +108,8 @@ class PipelineResult:
     metadata: dict = field(default_factory=dict)
     image_paths_by_step: dict[int, dict[str, str]] = field(default_factory=dict)
     clustering_by_step: dict[int, Clustering] = field(default_factory=dict)
+    # step -> seed instruction -> variants generated from that seed
+    augmented_by_step: dict[int, dict[str, list[str]]] = field(default_factory=dict)
 
     def representatives(self, step: int) -> list[str]:
         """The kept instructions for a step: one per behaviour cluster."""
@@ -121,42 +130,10 @@ class PipelineResult:
             for member, representative in clustering.duplicate_of.items()
         }
 
-# ---------------------------------------------------------------------------
-# Postprocess hook (stub; filter / paraphrase later)
-# ---------------------------------------------------------------------------
-
-class PostProcessor(Protocol):
-    def process(self,
-        instructions: list[str],
-        *,
-        step: int,
-        call_name: str,
-    ) -> list[str]:
-        ...
-
-class NoOpPostProcessor:
-    def process(
-        self,
-        instructions: list[str],
-        *,
-        step: int,
-        call_name: str,
-    ) -> list[str]:
-        return list(instructions)
-
-def build_postprocessor(postprocess: dict[str, Any] | None) -> PostProcessor:
-    """Build the postprocessor from the YAML `postprocess` block.
-
-    Currently only supports a disabled / no-op path. When `enabled` is true,
-    raise so callers know the real implementation is not wired yet.
-    """
-    cfg = postprocess or {}
-    if cfg.get("enabled", False):
-        raise NotImplementedError(
-            "LLM filter/paraphrase postprocess is not implemented yet. "
-            "Set postprocess.enabled: false (or omit postprocess) for now."
-        )
-    return NoOpPostProcessor()
+    def final_instructions(self, step: int) -> list[str]:
+        """Representatives plus any post-merge augmented variants."""
+        groups = self.augmented_by_step.get(step, {})
+        return self.representatives(step) + flatten_augment_groups(groups)
 
 # ---------------------------------------------------------------------------
 # Load YAML
@@ -253,9 +230,18 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     if not calls_raw or not isinstance(calls_raw, list):
         raise ValueError("Config must include a non-empty `calls` list")
 
-    postprocess = raw.get("postprocess") or {}
-    if not isinstance(postprocess, dict):
-        raise TypeError("`postprocess` must be a mapping")
+    augment = raw.get("augment") or {}
+    if not isinstance(augment, dict):
+        raise TypeError("`augment` must be a mapping")
+    unknown_augment = set(augment) - AUGMENT_KEYS
+    if unknown_augment:
+        raise ValueError(
+            f"Unknown augment option(s): {', '.join(sorted(unknown_augment))}. "
+            f"Allowed: {', '.join(sorted(AUGMENT_KEYS))}"
+        )
+    if augment.get("enabled"):
+        # Validate counts early so a bad config fails before any API work.
+        resolve_augment_counts(augment)
 
     save_per_call = bool(raw.get("save_per_call", True))
 
@@ -313,7 +299,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         image_dir=image_dir,
         estimate_cost=estimate_cost,
         output_path=output_path,
-        postprocess=postprocess,
+        augment=augment,
         save_per_call=save_per_call,
         uniqueness=uniqueness,
     )
@@ -378,13 +364,45 @@ def resolve_uniqueness_when(settings: dict[str, Any] | None) -> str | None:
     return when
 
 
-def run_pipeline(
-    config: PipelineConfig,
-    postprocessor: PostProcessor | None = None,
-) -> PipelineResult:
-    if postprocessor is None:
-        postprocessor = build_postprocessor(config.postprocess)
+def apply_augment(
+    result: PipelineResult,
+    *,
+    vlm: VLM,
+    paraphrases_per_instruction: int,
+    noisy_per_instruction: int,
+) -> dict[int, dict[str, list[str]]]:
+    """Expand each step's remaining (representative) instructions in place.
 
+    Returns the step -> (seed -> variants) map also stored on
+    `result.augmented_by_step`.
+    """
+    augmented: dict[int, dict[str, list[str]]] = {}
+    for step in result.merged_by_step:
+        seeds = result.representatives(step)
+        groups = expand_instructions(
+            vlm,
+            seeds,
+            paraphrases_per_instruction=paraphrases_per_instruction,
+            noisy_per_instruction=noisy_per_instruction,
+        )
+        augmented[step] = groups
+        n_variants = sum(len(v) for v in groups.values())
+        print(
+            f"[augment] step {step}: {len(seeds)} seeds -> "
+            f"+{n_variants} variants "
+            f"({paraphrases_per_instruction} paraphrase / "
+            f"{noisy_per_instruction} noisy each)"
+        )
+        for variants in groups.values():
+            for text in variants:
+                result.provenance.setdefault(step, {}).setdefault(text, []).append(
+                    "augment"
+                )
+    result.augmented_by_step = augmented
+    return augmented
+
+
+def run_pipeline(config: PipelineConfig) -> PipelineResult:
     when = resolve_uniqueness_when(config.uniqueness)
     uniqueness_judge: VLM | None = None
     uniqueness_definition = DEFAULT_DEFINITION
@@ -426,53 +444,33 @@ def run_pipeline(
         generation = generate_instructions(gen_cfg, vlm=vlm, judge=judge)
         trajectory_length = generation.trajectory_length
         metadata = generation.metadata
-
-        # Apply postprocess to each step's verified instructions.
-        processed_steps: list[StepInstructions] = []
-        for step in generation.steps:
-            new_instructions = postprocessor.process(
-                step.instructions,
-                step=step.step,
-                call_name=call_spec.name,
-            )
-            processed_steps.append(
-                StepInstructions(
-                    step=step.step,
-                    instructions=new_instructions,
-                    raw_response=step.raw_response,
-                    image_paths=step.image_paths,
-                    scored=step.scored,
-                    judge_raw_response=step.judge_raw_response,
-                )
-            )
+        steps = generation.steps
 
         call_clustering: dict[int, Clustering] = {}
         if when == "before" and uniqueness_judge is not None:
             print(f"[{call_spec.name}] Clustering uniqueness before merge ...")
             call_clustering = apply_uniqueness_to_steps(
-                processed_steps,
+                steps,
                 judge=uniqueness_judge,
                 trajectory_length=trajectory_length,
                 definition=uniqueness_definition,
                 label=f"uniqueness/{call_spec.name}",
             )
 
-        # Patch generation.steps so per-call write_txt reflects postprocess + uniqueness.
-        generation.steps = processed_steps
         call_results.append(
             CallResult(
                 name=call_spec.name,
                 generation=generation,
                 vlm=vlm,
                 judge=judge,
-                steps=processed_steps,
+                steps=steps,
                 clustering_by_step=call_clustering,
             )
         )
-        n_acc = sum(len(s.instructions) for s in processed_steps)
+        n_acc = sum(len(s.instructions) for s in steps)
         print(
             f"[{call_spec.name}] {n_acc} instructions across "
-            f"{len(processed_steps)} steps"
+            f"{len(steps)} steps"
         )
 
     merged, provenance, image_paths = merge_call_results(call_results)
@@ -486,7 +484,8 @@ def run_pipeline(
             definition=uniqueness_definition,
             label="uniqueness/after",
         )
-    return PipelineResult(
+
+    result = PipelineResult(
         config=config,
         calls=call_results,
         merged_by_step=merged,
@@ -496,6 +495,27 @@ def run_pipeline(
         image_paths_by_step=image_paths,
         clustering_by_step=clustering,
     )
+
+    # After merge (+ uniqueness): optionally grow the kept list with paraphrases
+    # and noisy rewrites. Runs on representatives so folded duplicates are skipped.
+    if config.augment.get("enabled"):
+        paraphrases, noisy = resolve_augment_counts(config.augment)
+        augmenter = build_augmenter(
+            str(config.augment.get("provider", "gemini")),
+            config.augment.get("model"),
+        )
+        print(
+            f"[augment] expanding kept instructions "
+            f"({paraphrases} paraphrase + {noisy} noisy each) with {augmenter} ..."
+        )
+        apply_augment(
+            result,
+            vlm=augmenter,
+            paraphrases_per_instruction=paraphrases,
+            noisy_per_instruction=noisy,
+        )
+
+    return result
 
 # ---------------------------------------------------------------------------
 # Output
@@ -587,15 +607,26 @@ def write_pipeline_txt(result: PipelineResult, output_path: Path) -> Path:
             f"({result.config.uniqueness.get('provider', 'gemini')}, "
             f"definition={result.config.uniqueness.get('definition', DEFAULT_DEFINITION)})"
         )
+    if result.config.augment.get("enabled"):
+        paraphrases, noisy = resolve_augment_counts(result.config.augment)
+        lines.append(
+            f"augment: "
+            f"({result.config.augment.get('provider', 'gemini')}, "
+            f"paraphrases_per_instruction={paraphrases}, "
+            f"noisy_per_instruction={noisy})"
+        )
 
-    for step, instructions in result.merged_by_step.items():
+    for step in result.merged_by_step:
         lines.append(f"[step {step}]")
         step_prov = result.provenance.get(step, {})
         duplicates = result.duplicates(step)
+        augment_groups = result.augmented_by_step.get(step, {})
         for instruction in result.representatives(step):
             sources = step_prov.get(instruction, [])
             suffix = f" | from: {', '.join(sources)}" if sources else ""
             lines.append(f"  - {instruction}{suffix}")
+            for variant in augment_groups.get(instruction, []):
+                lines.append(f"    - {variant} | from: augment")
         for instruction, representative in duplicates.items():
             sources = step_prov.get(instruction, [])
             suffix = f" | from: {', '.join(sources)}" if sources else ""
@@ -658,11 +689,22 @@ def main(argv: list[str] | None = None) -> None:
             write_txt(call.generation, call.vlm, call_path, judge=call.judge)
             print(f"Wrote per-call dump: {call_path}")
 
-    total_merged = sum(len(v) for v in result.merged_by_step.values())
-    print(
-        f"Merged {total_merged} unique instructions across "
-        f"{len(result.merged_by_step)} steps -> {merged_path}"
+    total_kept = sum(len(result.representatives(s)) for s in result.merged_by_step)
+    total_augmented = sum(
+        len(variants)
+        for groups in result.augmented_by_step.values()
+        for variants in groups.values()
     )
+    if total_augmented:
+        print(
+            f"Merged {total_kept} kept instructions (+{total_augmented} augment "
+            f"variants) across {len(result.merged_by_step)} steps -> {merged_path}"
+        )
+    else:
+        print(
+            f"Merged {total_kept} unique instructions across "
+            f"{len(result.merged_by_step)} steps -> {merged_path}"
+        )
     if config.estimate_cost:
         print("(See merged header for per-call / total estimated costs.)")
 

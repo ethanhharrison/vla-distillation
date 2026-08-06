@@ -70,8 +70,35 @@ def resolve_run_file(target: str) -> Path:
     return matches[0]
 
 
+def _leading_spaces(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _finalize_step(step: dict) -> dict:
+    """Drop parser-only keys and rebuild flat instruction lists for compat."""
+    step.pop("_seed_indent", None)
+    instructions: list[str] = []
+    grades: list[dict[str, str] | None] = []
+    for item in step["items"]:
+        instructions.append(item["text"])
+        grades.append(item["grades"])
+        for variant in item["augment"]:
+            instructions.append(variant["text"])
+            grades.append(variant["grades"])
+    step["instructions"] = instructions
+    step["grades"] = grades
+    return step
+
+
 def parse_run(path: Path) -> dict:
-    """Parse a generated run .txt into a structured dict."""
+    """Parse a generated run .txt into a structured dict.
+
+    Instruction lines may nest: a deeper-indented `- ` under a seed is an
+    augment variant of that seed (pipeline `augment:` step). Each step has:
+
+    - `items`: [{text, grades, augment: [{text, grades}, ...]}, ...]
+    - `instructions` / `grades`: flat seed+variant lists (older callers)
+    """
     lines = path.read_text().splitlines()
     separator = next(
         (i for i, line in enumerate(lines) if set(line) == {"="} and len(line) >= 10),
@@ -100,18 +127,40 @@ def parse_run(path: Path) -> dict:
         stripped = line.strip()
         if stripped.startswith("[step ") and stripped.endswith("]"):
             if current is not None:
-                steps.append(current)
+                steps.append(_finalize_step(current))
             current = {
                 "step": int(stripped[len("[step ") : -1]),
-                "instructions": [],
-                "grades": [],
+                "items": [],
                 "rejected": [],
                 "images": {},
+                "_seed_indent": None,
             }
+        elif (
+            current is None
+            and stripped
+            and not stripped.startswith(("(", "[", "-"))
+            and ":" in stripped
+        ):
+            # Body-level notes after the === separator (uniqueness:, augment:).
+            key, _, value = stripped.partition(":")
+            info[key.strip()] = value.strip()
         elif stripped.startswith("- ") and current is not None:
             text, grades = _split_score(stripped[2:])
-            current["instructions"].append(text)
-            current["grades"].append(grades)
+            indent = _leading_spaces(line)
+            seed_indent = current["_seed_indent"]
+            if (
+                seed_indent is not None
+                and indent > seed_indent
+                and current["items"]
+            ):
+                current["items"][-1]["augment"].append(
+                    {"text": text, "grades": grades}
+                )
+            else:
+                current["_seed_indent"] = indent
+                current["items"].append(
+                    {"text": text, "grades": grades, "augment": []}
+                )
         elif stripped.startswith("(rejected) ") and current is not None:
             text, grades = _split_score(stripped[len("(rejected) ") :])
             current["rejected"].append({"text": text, "grades": grades})
@@ -122,7 +171,7 @@ def parse_run(path: Path) -> dict:
             camera, _, image_path = stripped[len("(image) ") :].partition(": ")
             current["images"][camera] = image_path
     if current is not None:
-        steps.append(current)
+        steps.append(_finalize_step(current))
 
     original = []
     for key in ORIGINAL_INSTRUCTION_KEYS:
@@ -162,8 +211,11 @@ def _score_badge(grades: dict[str, str] | None, rejected: bool = False) -> str:
             f'<span class="{base}">stage {html.escape(grades["stage"])}</span>'
         )
     if "from" in grades:
+        from_cls = base
+        if grades["from"] == "augment" and not rejected:
+            from_cls = "badge augment-badge"
         badges.append(
-            f'<span class="{base}">from {html.escape(grades["from"])}</span>'
+            f'<span class="{from_cls}">from {html.escape(grades["from"])}</span>'
         )
     if "duplicate of" in grades:
         badges.append(
@@ -173,6 +225,22 @@ def _score_badge(grades: dict[str, str] | None, rejected: bool = False) -> str:
         label = ", ".join(f"{k} {v}" for k, v in grades.items())
         badges.append(f'<span class="{base}">{html.escape(label)}</span>')
     return " " + " ".join(badges)
+
+
+def _render_instruction_item(item: dict) -> str:
+    """Render one kept instruction and any nested augment variants."""
+    variants = item.get("augment") or []
+    nested = ""
+    if variants:
+        nested_items = "".join(
+            f"<li>{html.escape(v['text'])}{_score_badge(v.get('grades'))}</li>"
+            for v in variants
+        )
+        nested = f'<ul class="augment">{nested_items}</ul>'
+    return (
+        f"<li>{html.escape(item['text'])}{_score_badge(item.get('grades'))}"
+        f"{nested}</li>"
+    )
 
 
 def _fmt_cost(value: str | None) -> str:
@@ -237,18 +305,23 @@ def render_html(run: dict, source: Path) -> str:
             f'<figure>{_embed_image(p)}<figcaption>{html.escape(cam)}</figcaption></figure>'
             for cam, p in step["images"].items()
         )
-        grades_list = step.get("grades") or [None] * len(step["instructions"])
-        instructions = "".join(
-            f"<li>{html.escape(text)}{_score_badge(grades)}</li>"
-            for text, grades in zip(step["instructions"], grades_list)
-        )
+        items = step.get("items")
+        if items is None:
+            # Older parsed shape without nesting metadata.
+            grades_list = step.get("grades") or [None] * len(step["instructions"])
+            items = [
+                {"text": text, "grades": grades, "augment": []}
+                for text, grades in zip(step["instructions"], grades_list)
+            ]
+        instructions = "".join(_render_instruction_item(item) for item in items)
         rejected_items = "".join(
             f'<li>{html.escape(r["text"])}'
             f'{_score_badge(r.get("grades"), rejected=True)}</li>'
             for r in step.get("rejected", [])
         )
+        n_aug = sum(len(item.get("augment") or []) for item in items)
         rejected_block = (
-            f'<details class="rejected"><summary>Rejected by judge '
+            f'<details class="rejected"><summary>Rejected / folded '
             f'({len(step["rejected"])})</summary><ul>{rejected_items}</ul></details>'
             if step.get("rejected")
             else ""
@@ -256,6 +329,7 @@ def render_html(run: dict, source: Path) -> str:
 
         # Reconstruct the exact system prompt sent at this step: the avoid list
         # grows as it accumulates instructions suggested at earlier steps.
+        # Augment variants are post-merge and do not belong on that avoid list.
         step_prompt = build_prompt(
             step=step["step"],
             total=total,
@@ -263,10 +337,14 @@ def render_html(run: dict, source: Path) -> str:
             original_instructions=run["original"],
             previous_instructions=previous_instructions,
         )
+        count_note = (
+            f"{len(items)} kept"
+            + (f", {n_aug} augment" if n_aug else "")
+        )
         step_sections.append(
             f"""
             <section class="step">
-              <h3>Step {step['step']}</h3>
+              <h3>Step {step['step']} <span class="subtitle">({count_note})</span></h3>
               <div class="frames">{images or '<em>no images saved</em>'}</div>
               <ol class="instructions">{instructions}</ol>
               {rejected_block}
@@ -279,9 +357,9 @@ def render_html(run: dict, source: Path) -> str:
             """
         )
 
-        for text in step["instructions"]:
-            if text not in previous_instructions:
-                previous_instructions.append(text)
+        for item in items:
+            if item["text"] not in previous_instructions:
+                previous_instructions.append(item["text"])
 
     meta_rows = "".join(
         f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(v))}</td></tr>"
@@ -314,10 +392,15 @@ def render_html(run: dict, source: Path) -> str:
   figure img {{ width: 260px; height: auto; border-radius: 6px; display: block; }}
   figcaption {{ font-size: 12px; color: #888; text-align: center; margin-top: 4px; }}
   .instructions li {{ margin: 4px 0; }}
+  .instructions > li {{ margin: 8px 0; }}
+  ul.augment {{ list-style: disc; margin: 4px 0 6px 1.25em; padding: 0;
+               color: #666; font-size: 0.95em; }}
+  ul.augment li {{ margin: 2px 0; }}
   .badge {{ display: inline-block; font-size: 11px; font-weight: 600;
            background: #2e7d3222; color: #2e7d32; border-radius: 6px;
            padding: 1px 6px; margin-left: 6px; vertical-align: middle; }}
   .rejected-badge {{ background: #c6282822; color: #c62828; }}
+  .augment-badge {{ background: #1565c022; color: #1565c0; }}
   details.rejected {{ margin: 6px 0 8px; }}
   details.rejected summary {{ cursor: pointer; color: #c62828; font-size: 13px; }}
   details.rejected li {{ color: #888; text-decoration: line-through; }}

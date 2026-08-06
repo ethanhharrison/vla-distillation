@@ -7,8 +7,9 @@
 # trajectory. Shared `defaults` apply to every call and can be overridden
 # per call. Results are merged (and string-deduped) by step at the end.
 #
-# `postprocess` is reserved for a future LLM filter/paraphrase pass after
-# each call's verified instructions. Keep enabled: false for now.
+# `augment` (optional): after merge (+ uniqueness), prompt an LLM to
+# paraphrase each kept instruction and add noisy variants (misspellings,
+# grammar errors). Tune paraphrases_per_instruction / noisy_per_instruction.
 
 record: datasets/droid/success/success-00285.tfrecord
 example_index: 0
@@ -31,5 +32,8 @@ calls:
     step_interval: 25
     num_instructions: 3
 
-postprocess:
+augment:
   enabled: false
+  # provider: gemini
+  # paraphrases_per_instruction: 1
+  # noisy_per_instruction: 1

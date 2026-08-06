@@ -21,6 +21,18 @@ from summarize_language_instructions import (
 )
 
 
+def _render_compare_item(item: dict) -> str:
+    """Seed instruction plus nested augment variants (when present)."""
+    nested = ""
+    variants = item.get("augment") or []
+    if variants:
+        nested_items = "".join(
+            f"<li>{html.escape(v['text'])}</li>" for v in variants
+        )
+        nested = f'<ul class="augment">{nested_items}</ul>'
+    return f"<li>{html.escape(item['text'])}{nested}</li>"
+
+
 def _load_runs(targets: list[str]) -> list[dict]:
     runs = []
     for target in targets:
@@ -70,7 +82,9 @@ def render_html(runs: list[dict]) -> str:
         columns = []
         for run_steps in indexed:
             step = run_steps.get(step_num)
-            if step and step["instructions"]:
+            if step and step.get("items"):
+                items = "".join(_render_compare_item(item) for item in step["items"])
+            elif step and step["instructions"]:
                 items = "".join(
                     f"<li>{html.escape(t)}</li>" for t in step["instructions"]
                 )
@@ -133,6 +147,9 @@ def render_html(runs: list[dict]) -> str:
   .mcol {{ border: 1px solid #8883; border-radius: 8px; padding: 8px 10px; }}
   .instructions {{ margin: 0; padding-left: 20px; }}
   .instructions li {{ margin: 4px 0; }}
+  ul.augment {{ list-style: disc; margin: 2px 0 4px 1.1em; padding: 0;
+               color: #666; font-size: 0.92em; }}
+  ul.augment li {{ margin: 1px 0; }}
   .missing {{ width: 240px; height: 135px; display: flex; align-items: center;
              justify-content: center; background: #8881; border-radius: 6px;
              font-size: 12px; color: #c33; text-align: center; }}
