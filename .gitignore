@@ -13,3 +13,8 @@ uv.lock
 /explorations/dreamzero/repo/
 /explorations/dreamzero/.venv/
 /explorations/dreamzero/results/
+
+# explore/cosmos3: same — venv, generated videos/actions, run logs
+/explorations/cosmos3/.venv/
+/explorations/cosmos3/results/
+/explorations/cosmos3/*.log
