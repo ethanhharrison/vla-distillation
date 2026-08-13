@@ -37,10 +37,11 @@ uniqueness:
   provider: gemini
   definition: semantic_groups
 
-# After merge (+ uniqueness): grow the kept list with paraphrases and noisy
-# rewrites (misspellings, grammar errors). Text-only; no scene frames.
+# After merge (+ uniqueness): grow the kept list with paraphrases, noisy
+# rewrites, and optional multi-task combinations. Text-only; no scene frames.
 augment:
   enabled: true
   provider: gemini
   paraphrases_per_instruction: 2
   noisy_per_instruction: 1
+  combined_instructions: 20

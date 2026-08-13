@@ -14,6 +14,7 @@ load_dotenv()
 from .augment import (
     AUGMENT_KEYS,
     build_augmenter,
+    combine_instructions,
     expand_instructions,
     flatten_augment_groups,
     resolve_augment_counts,
@@ -108,8 +109,8 @@ class PipelineResult:
     metadata: dict = field(default_factory=dict)
     image_paths_by_step: dict[int, dict[str, str]] = field(default_factory=dict)
     clustering_by_step: dict[int, Clustering] = field(default_factory=dict)
-    # step -> seed instruction -> variants generated from that seed
     augmented_by_step: dict[int, dict[str, list[str]]] = field(default_factory=dict)
+    combined_by_step: dict[int, list[str]] = field(default_factory=dict)
 
     def representatives(self, step: int) -> list[str]:
         """The kept instructions for a step: one per behaviour cluster."""
@@ -131,9 +132,13 @@ class PipelineResult:
         }
 
     def final_instructions(self, step: int) -> list[str]:
-        """Representatives plus any post-merge augmented variants."""
+        """Representatives plus any post-merge augmented / combined variants."""
         groups = self.augmented_by_step.get(step, {})
-        return self.representatives(step) + flatten_augment_groups(groups)
+        return (
+            self.representatives(step)
+            + flatten_augment_groups(groups)
+            + self.combined_by_step.get(step, [])
+        )
 
 # ---------------------------------------------------------------------------
 # Load YAML
@@ -370,13 +375,14 @@ def apply_augment(
     vlm: VLM,
     paraphrases_per_instruction: int,
     noisy_per_instruction: int,
-) -> dict[int, dict[str, list[str]]]:
+    combined_instructions: int = 0,
+) -> tuple[dict[int, dict[str, list[str]]], dict[int, list[str]]]:
     """Expand each step's remaining (representative) instructions in place.
 
-    Returns the step -> (seed -> variants) map also stored on
-    `result.augmented_by_step`.
+    Returns `(augmented_by_step, combined_by_step)` and stores both on `result`.
     """
     augmented: dict[int, dict[str, list[str]]] = {}
+    combined: dict[int, list[str]] = {}
     for step in result.merged_by_step:
         seeds = result.representatives(step)
         groups = expand_instructions(
@@ -398,8 +404,36 @@ def apply_augment(
                 result.provenance.setdefault(step, {}).setdefault(text, []).append(
                     "augment"
                 )
+
+        pool = seeds + flatten_augment_groups(groups)
+        if combined_instructions > 0:
+            if len(pool) < 2:
+                print(
+                    f"[augment] step {step}: skipping combined "
+                    f"(need >= 2 pool entries, got {len(pool)})"
+                )
+                combined[step] = []
+            else:
+                fused = combine_instructions(
+                    vlm,
+                    pool,
+                    num_combined=combined_instructions,
+                )
+                combined[step] = fused
+                print(
+                    f"[augment] step {step}: +{len(fused)} combined "
+                    f"(requested {combined_instructions})"
+                )
+                for text in fused:
+                    result.provenance.setdefault(step, {}).setdefault(
+                        text, []
+                    ).append("combined")
+        else:
+            combined[step] = []
+
     result.augmented_by_step = augmented
-    return augmented
+    result.combined_by_step = combined
+    return augmented, combined
 
 
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
@@ -496,23 +530,27 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         clustering_by_step=clustering,
     )
 
-    # After merge (+ uniqueness): optionally grow the kept list with paraphrases
-    # and noisy rewrites. Runs on representatives so folded duplicates are skipped.
+    # After merge (+ uniqueness): optionally grow the kept list with paraphrases,
+    # noisy rewrites, and multi-task combinations. Runs on representatives so
+    # folded duplicates are skipped.
     if config.augment.get("enabled"):
-        paraphrases, noisy = resolve_augment_counts(config.augment)
+        paraphrases, noisy, num_combined = resolve_augment_counts(config.augment)
         augmenter = build_augmenter(
             str(config.augment.get("provider", "gemini")),
             config.augment.get("model"),
         )
         print(
             f"[augment] expanding kept instructions "
-            f"({paraphrases} paraphrase + {noisy} noisy each) with {augmenter} ..."
+            f"({paraphrases} paraphrase + {noisy} noisy each"
+            f"{f', {num_combined} combined' if num_combined else ''}) "
+            f"with {augmenter} ..."
         )
         apply_augment(
             result,
             vlm=augmenter,
             paraphrases_per_instruction=paraphrases,
             noisy_per_instruction=noisy,
+            combined_instructions=num_combined,
         )
 
     return result
@@ -608,12 +646,13 @@ def write_pipeline_txt(result: PipelineResult, output_path: Path) -> Path:
             f"definition={result.config.uniqueness.get('definition', DEFAULT_DEFINITION)})"
         )
     if result.config.augment.get("enabled"):
-        paraphrases, noisy = resolve_augment_counts(result.config.augment)
+        paraphrases, noisy, num_combined = resolve_augment_counts(result.config.augment)
         lines.append(
             f"augment: "
             f"({result.config.augment.get('provider', 'gemini')}, "
             f"paraphrases_per_instruction={paraphrases}, "
-            f"noisy_per_instruction={noisy})"
+            f"noisy_per_instruction={noisy}, "
+            f"combined_instructions={num_combined})"
         )
 
     for step in result.merged_by_step:
@@ -627,6 +666,11 @@ def write_pipeline_txt(result: PipelineResult, output_path: Path) -> Path:
             lines.append(f"  - {instruction}{suffix}")
             for variant in augment_groups.get(instruction, []):
                 lines.append(f"    - {variant} | from: augment")
+        combined = result.combined_by_step.get(step, [])
+        if combined:
+            lines.append("  [combined]")
+            for instruction in combined:
+                lines.append(f"  - {instruction} | from: combined")
         for instruction, representative in duplicates.items():
             sources = step_prov.get(instruction, [])
             suffix = f" | from: {', '.join(sources)}" if sources else ""
@@ -695,10 +739,16 @@ def main(argv: list[str] | None = None) -> None:
         for groups in result.augmented_by_step.values()
         for variants in groups.values()
     )
+    total_combined = sum(len(v) for v in result.combined_by_step.values())
+    extras = []
     if total_augmented:
+        extras.append(f"+{total_augmented} augment")
+    if total_combined:
+        extras.append(f"+{total_combined} combined")
+    if extras:
         print(
-            f"Merged {total_kept} kept instructions (+{total_augmented} augment "
-            f"variants) across {len(result.merged_by_step)} steps -> {merged_path}"
+            f"Merged {total_kept} kept instructions ({', '.join(extras)}) "
+            f"across {len(result.merged_by_step)} steps -> {merged_path}"
         )
     else:
         print(

@@ -77,6 +77,7 @@ def _leading_spaces(line: str) -> int:
 def _finalize_step(step: dict) -> dict:
     """Drop parser-only keys and rebuild flat instruction lists for compat."""
     step.pop("_seed_indent", None)
+    step.pop("_in_combined", None)
     instructions: list[str] = []
     grades: list[dict[str, str] | None] = []
     for item in step["items"]:
@@ -85,6 +86,9 @@ def _finalize_step(step: dict) -> dict:
         for variant in item["augment"]:
             instructions.append(variant["text"])
             grades.append(variant["grades"])
+    for item in step.get("combined", []):
+        instructions.append(item["text"])
+        grades.append(item["grades"])
     step["instructions"] = instructions
     step["grades"] = grades
     return step
@@ -94,10 +98,12 @@ def parse_run(path: Path) -> dict:
     """Parse a generated run .txt into a structured dict.
 
     Instruction lines may nest: a deeper-indented `- ` under a seed is an
-    augment variant of that seed (pipeline `augment:` step). Each step has:
+    augment variant of that seed (pipeline `augment:` step). A `[combined]`
+    marker starts multi-task fused instructions for the step. Each step has:
 
     - `items`: [{text, grades, augment: [{text, grades}, ...]}, ...]
-    - `instructions` / `grades`: flat seed+variant lists (older callers)
+    - `combined`: [{text, grades}, ...]
+    - `instructions` / `grades`: flat seed+variant+combined lists (compat)
     """
     lines = path.read_text().splitlines()
     separator = next(
@@ -131,10 +137,14 @@ def parse_run(path: Path) -> dict:
             current = {
                 "step": int(stripped[len("[step ") : -1]),
                 "items": [],
+                "combined": [],
                 "rejected": [],
                 "images": {},
                 "_seed_indent": None,
+                "_in_combined": False,
             }
+        elif stripped == "[combined]" and current is not None:
+            current["_in_combined"] = True
         elif (
             current is None
             and stripped
@@ -147,6 +157,9 @@ def parse_run(path: Path) -> dict:
         elif stripped.startswith("- ") and current is not None:
             text, grades = _split_score(stripped[2:])
             indent = _leading_spaces(line)
+            if current.get("_in_combined"):
+                current["combined"].append({"text": text, "grades": grades})
+                continue
             seed_indent = current["_seed_indent"]
             if (
                 seed_indent is not None
@@ -212,7 +225,7 @@ def _score_badge(grades: dict[str, str] | None, rejected: bool = False) -> str:
         )
     if "from" in grades:
         from_cls = base
-        if grades["from"] == "augment" and not rejected:
+        if not rejected and grades["from"] in {"augment", "combined"}:
             from_cls = "badge augment-badge"
         badges.append(
             f'<span class="{from_cls}">from {html.escape(grades["from"])}</span>'
@@ -320,6 +333,17 @@ def render_html(run: dict, source: Path) -> str:
             for r in step.get("rejected", [])
         )
         n_aug = sum(len(item.get("augment") or []) for item in items)
+        combined = step.get("combined") or []
+        combined_block = ""
+        if combined:
+            combined_items = "".join(
+                f"<li>{html.escape(c['text'])}{_score_badge(c.get('grades'))}</li>"
+                for c in combined
+            )
+            combined_block = (
+                f'<div class="combined"><h4>Combined '
+                f"({len(combined)})</h4><ul>{combined_items}</ul></div>"
+            )
         rejected_block = (
             f'<details class="rejected"><summary>Rejected / folded '
             f'({len(step["rejected"])})</summary><ul>{rejected_items}</ul></details>'
@@ -337,16 +361,18 @@ def render_html(run: dict, source: Path) -> str:
             original_instructions=run["original"],
             previous_instructions=previous_instructions,
         )
-        count_note = (
-            f"{len(items)} kept"
-            + (f", {n_aug} augment" if n_aug else "")
-        )
+        count_note = f"{len(items)} kept"
+        if n_aug:
+            count_note += f", {n_aug} augment"
+        if combined:
+            count_note += f", {len(combined)} combined"
         step_sections.append(
             f"""
             <section class="step">
               <h3>Step {step['step']} <span class="subtitle">({count_note})</span></h3>
               <div class="frames">{images or '<em>no images saved</em>'}</div>
               <ol class="instructions">{instructions}</ol>
+              {combined_block}
               {rejected_block}
               <details class="prompt">
                 <summary>System prompt used at this step
@@ -396,6 +422,10 @@ def render_html(run: dict, source: Path) -> str:
   ul.augment {{ list-style: disc; margin: 4px 0 6px 1.25em; padding: 0;
                color: #666; font-size: 0.95em; }}
   ul.augment li {{ margin: 2px 0; }}
+  .combined {{ margin: 10px 0 6px; }}
+  .combined h4 {{ margin: 0 0 4px; font-size: 14px; color: #1565c0; }}
+  .combined ul {{ margin: 0; padding-left: 1.25em; }}
+  .combined li {{ margin: 3px 0; }}
   .badge {{ display: inline-block; font-size: 11px; font-weight: 600;
            background: #2e7d3222; color: #2e7d32; border-radius: 6px;
            padding: 1px 6px; margin-left: 6px; vertical-align: middle; }}

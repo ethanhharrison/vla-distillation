@@ -285,6 +285,35 @@ Seed instructions:
 {numbered_instructions}"""
 
 
+COMBINE_PROMPT = """You are expanding a robot manipulation instruction dataset.
+
+Below is a pool of short imperative instructions (original seeds plus optional \
+paraphrases / noisy rewrites of those seeds). Produce exactly \
+{num_combined} NEW instructions. Each new instruction must COMBINE 2 or more \
+distinct tasks from the pool into one multi-part imperative command.
+
+Examples of the desired style (do not copy these literally):
+- "pick up the banana and place it next to the clock"
+- "grab the black mug then put it on the plate"
+
+Guidelines:
+- Every combined instruction must fuse at least two different tasks drawn from \
+the pool (different actions and/or different objects). Do not emit single-task \
+rephrasings.
+- Preserve physical plausibility: the combined steps should be something a \
+robot could attempt in sequence from the same scene.
+- You may lightly reword the parts you combine, but do not invent objects or \
+goals that are not already present in the pool.
+- Prefer diverse pairings — cover different seeds rather than repeating the \
+same two tasks.
+- Do NOT repeat any pool instruction verbatim as a whole line.
+- Output exactly one combined instruction per line, with no numbering, \
+bullets, labels, or commentary.
+
+Instruction pool:
+{numbered_instructions}"""
+
+
 def build_augment_prompt(
     instructions: list[str],
     paraphrases_per_instruction: int,
@@ -298,6 +327,21 @@ def build_augment_prompt(
     return template.format(
         paraphrases_per_instruction=paraphrases_per_instruction,
         noisy_per_instruction=noisy_per_instruction,
+        numbered_instructions=numbered,
+    )
+
+
+def build_combine_prompt(
+    instructions: list[str],
+    num_combined: int,
+    template: str = COMBINE_PROMPT,
+) -> str:
+    """Render the post-merge multi-task combination prompt."""
+    numbered = "\n".join(
+        f"{i}. {text}" for i, text in enumerate(instructions, start=1)
+    )
+    return template.format(
+        num_combined=num_combined,
         numbered_instructions=numbered,
     )
 

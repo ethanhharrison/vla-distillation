@@ -22,9 +22,10 @@ calls:
     prompt_template: precision
     num_instructions: 25
 
-# After merge: paraphrase + noisy variants of kept instructions.
+# After merge: paraphrase + noisy variants + optional multi-task combinations.
 augment:
   enabled: false
   # provider: gemini
   # paraphrases_per_instruction: 1
   # noisy_per_instruction: 1
+  # combined_instructions: 20
