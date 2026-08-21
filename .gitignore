@@ -18,3 +18,7 @@ uv.lock
 /explorations/cosmos3/.venv/
 /explorations/cosmos3/results/
 /explorations/cosmos3/*.log
+
+# explore/image_edit: generated subgoals + reports (runs on the main venv)
+/explorations/image_edit/results/
+/explorations/image_edit/*.log

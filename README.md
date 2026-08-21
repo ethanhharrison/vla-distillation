@@ -33,6 +33,7 @@ vla-distillation/
 │       ├── backends.py         # swappable image-edit backends (Gemini / OpenAI / real_future / dummy)
 │       ├── prompts.py          # subgoal prompt templates
 │       ├── generate.py         # orchestration + CLI
+│       ├── edit.py             # one cached, budget-checked edit (shared with the eval harness)
 │       └── {imaging,cache,cost}.py  # phash + 224 downscale, edit cache, $ ceiling
 ├── datasets/                   # downloaded TFRecords / RLDS (git-ignored)
 └── outputs/                    # generated instructions, subgoal runs, frames (git-ignored)
@@ -382,8 +383,15 @@ uv run python scripts/summarize_subgoal_images.py outputs/subgoal_images/tune_co
 | `--ceiling` | `5.0` | Hard $ spend ceiling; aborts before overspending. |
 | `--no-cache` | off | Never read/write the edit cache (always re-run edits). |
 | `--no-spend` | off | Drop paid backends; run only `real_future` / `dummy_image`. |
-| `--gemini-model` | `gemini-2.5-flash-image` | Gemini image-edit model. |
-| `--openai-model` / `--openai-quality` | `gpt-image-1.5` / `low` | OpenAI model and quality (`low`/`medium`/`high`/`auto`). |
+| `--gemini-model` | `gemini-3.1-flash-image` | Gemini image-edit model. |
+| `--openai-model` / `--openai-quality` | `gpt-image-2` / `low` | OpenAI model and quality (`low`/`medium`/`high`/`auto`). |
+
+Measured on a 320x180 DROID frame (2026-08-20): `gpt-image-2` costs **$0.006 /
+$0.037 / $0.141** per image at low / medium / high quality (19 / 38 / 100 s), and
+`gemini-3.1-flash-image` **$0.083** (8 s). Quality is the dominant cost *and*
+latency knob on OpenAI. Both models return images ~5x larger than the source
+frame. `gemini-3-pro-image` and the older `gpt-image-1.5` / `gpt-image-1` /
+`gpt-image-1-mini` remain selectable.
 | `--output` | auto-named | Run output dir under `outputs/subgoal_images/`. |
 
 The two most important knobs while tuning:
@@ -448,6 +456,12 @@ straightforward to feed the results into downstream tooling.
 Prototype investigations that are intentionally kept out of the `pipeline/`
 package (self-contained, may pull large external models/weights):
 
+- **`explorations/image_edit/`** — the A/B/C evaluation harness for Stage B's own
+  hosted editors (Gemini / OpenAI), on the same situations, conditions and units
+  as the two world-model explorations below, so all three can be read against
+  each other. Adds the two controls a single image needs: a **no-op floor** (what
+  the model changes when told to change nothing) and a **resample null** (the same
+  request asked twice). No venv, no weights — runs on the main venv. See its `README.md`.
 - **`explorations/dreamzero/`** — evaluating [DreamZero-DROID](https://huggingface.co/GEAR-Dreams/DreamZero-DROID)
   (14B Wan-based World Action Model) as a single model that jointly generates a
   future **subgoal video + action chunk** — i.e. a possible combined replacement
