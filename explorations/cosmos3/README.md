@@ -7,6 +7,11 @@ generator**: given one real DROID frame + a language instruction it jointly
 denoises a future video and an action chunk. Same protocol, same situations and
 same conditions as `explorations/dreamzero/`, so the two are comparable.
 
+Three checkpoints are now measured on that one protocol: the DROID-post-trained
+Nano, the general Nano (both 16B) and the general **Super (64B)**. There is no
+Super-tier Policy-DROID — the specialist exists only at Nano and Edge — so Super
+is compared against the *general* Nano, which makes it a clean capacity test.
+
 Full write-up: `~/proj/notes/vla/SESSION_COSMOS3.md`.
 
 ## TL;DR
@@ -24,11 +29,16 @@ Full write-up: `~/proj/notes/vla/SESSION_COSMOS3.md`.
   now moves the output as much as re-rolling the dice. The single-scene number
   was substantially an artifact: every counterfactual there referred to the same
   pot and marker, so it was barely a different instruction at all.
-- **Still no clean semantic differentiation.** Plausible (B) and impossible (C)
-  instructions perturb the rollout by similar amounts, with no consistent
-  ordering across cameras. That is ambiguous rather than damning: a
+- **Still no clean semantic differentiation *at 16B*.** Plausible (B) and
+  impossible (C) instructions perturb the rollout by similar amounts, with no
+  consistent ordering across cameras. That is ambiguous rather than damning: a
   semantically-distant instruction producing a more distant rollout is also what
-  a model that *did* read the text would do.
+  a model that *did* read the text would do. **Super settles it** — C > B in all
+  six of its configs, and the gap widens monotonically with guidance.
+- **Capacity buys language, not physics.** Super's sensitivity is **119-186 % of
+  its own seed null** (general Nano 103 %, Policy-DROID 77 %), so the instruction
+  finally moves the rollout more than the dice do. But it is *more* jittery and
+  *less* faithful to the real future than the 16B generalist at every CFG.
 - **Classifier-free guidance is a real confound.** NVIDIA's own diffusers example
   passes `guidance_scale=1.0` (no CFG); the tech report uses **3** for this
   policy. Going 1 → 3 raises action sensitivity **9×**. Anyone repeating this
@@ -170,8 +180,12 @@ Fidelity here is a sanity check on condition A only.
 | `run_experiment.py` | the A/B/C/MP run over the DreamZero situation set (`--fps-sweep` for the fps check) |
 | `seed_null.py` | measures the seed null for a finished run and records it in its `index.json` |
 | `make_report.py` | HTML contact sheet, DreamZero layout: source + real future + generated per condition, 3 cameras per row |
+| `sweep_general_nano.sh` / `sweep_super.sh` | the two parameter sweeps; `sweep_super.sh` adds a GPU preflight check because one Super run owns a whole card |
+| `smoke_i2v.py` | one image-to-video call, with the checkpoint's own JSON caption schema built around the instruction |
 
-Git-ignored: `.venv/`, `results/`, and the weights under `~/proj/staging/vla/models/`.
+Git-ignored: `.venv/`, `results/`, and the weights (Nano under
+`~/proj/staging/vla/models/`, Super under `/raid/users/tiger/vla-distillation/models/`
+— the home fs is at 98 % and cannot hold 133 GB).
 
 ## Reproduce
 
@@ -233,12 +247,12 @@ export CUDA_VISIBLE_DEVICES=<idle-gpu> HF_HOME=~/proj/staging/vla/models/hf_cach
   returns joint-position actions, i.e. the true apples-to-apples with DreamZero.
   Skipped because it returns no video and because vLLM-Omni's current wheels
   target CUDA 13, which our driver cannot run.
-- **Image-to-video mode** on the general `Cosmos3-Nano` (a second, more direct
-  Stage-B analogue that would slot into `summarize_subgoal_images.py`).
-- **`view_point="concat_view"`** with a hand-built 540x640 three-view canvas
-  (wrist on top, two exteriors below) — this reproduces the layout the checkpoint
-  was actually post-trained on and is the most direct test of the
-  off-distribution hypothesis. Cheap; not yet run.
+- **Image-to-video at scale.** `smoke_i2v.py` runs one I2V call on Super (17
+  frames, 832x480 from a 320x180 source, 23.8 s) — scene identity holds and it
+  upscales, but the camera drifts despite the caption demanding a locked-off
+  tripod, and the instructed manipulation is not visibly executed. One sample and
+  one seed proves nothing; I2V has never been run through the A/B/C harness,
+  which is the only way to separate "ignores language" from "this seed did that".
 - **Multi-seed averaging.** With the seed null above the instruction effect, a
   single seed per condition cannot resolve a real effect; averaging N seeds per
   condition would.
@@ -270,27 +284,79 @@ below is directly comparable to the Policy-DROID tables above. Reports:
 (4.56 vs 5.76) because a shorter horizon contains less real motion — not
 comparable to the 32-frame rows.
 
-## The two models fail in opposite directions
+---
 
-| | Policy-DROID | general Nano |
-|---|---|---|
-| jitter vs reality | **0.52-0.89 — under-moves** | **1.06-1.50 — over-moves** |
-| fidelity to real future | 19.4 (better) | 24.6 |
-| sensitivity / own seed null | 77 % | 103 % |
+# Cosmos3-Super (64B, general — no Super-tier Policy-DROID exists)
 
-DROID post-training bought physical faithfulness, not language grounding. The
-generalist follows the instruction better but invents motion. Neither dominates;
-the choice depends on whether Stage B needs a plausible image or a responsive one.
+Same 8 trajectories, same A/B/C conditions, same three cameras as both Nano
+tables above, so every row is directly comparable. Reports:
+`results/sweep_super/` (6 configs). Run with `sweep_super.sh`.
+
+**It fits on one H200.** ~131 GB of BF16 weights, **peak 135 GB** of 143.7 — no
+tensor parallelism, no `torchrun`, and the pinned `diffusers 0.40.0.dev0` runs it
+unchanged. The diffusers docs say Super "does not fit on one 96 GB GPU, so it
+needs TP"; that is calibrated to 96 GB cards and does not apply here. Load 30 s.
+Latency scales with **canvas area, not parameter count**: 6.9 s/gen at tier 256,
+27 s at concat 480, 66 s at concat+upscale 720.
+
+The grid is smaller than the Nano sweeps on purpose — `flow_shift`, steps 30-vs-50,
+`resolution_tier` alone and karras were already measured dead on both 16B models.
+
+| config | CFG | floor | fidelity | jitter g/r | drift | sens B | seed null | sens / null |
+|---|---|---|---|---|---|---|---|---|
+| cfg=1 | 1 | 5.1 | 26.2 | 1.33 | 20.2 | 18.2 | 30.8 | 61 % |
+| **cfg=3** (baseline) | 3 | 5.1 | 28.5 | 1.45 | 21.8 | 26.7 | 23.9 | **119 %** |
+| cfg=7 | 7 | 5.1 | 31.3 | 1.46 | 23.5 | 32.1 | 27.3 | **128 %** |
+| concat3view | 3 | 4.7 | **38.9** | 1.45 | **30.1** | 28.4 | 19.9 | **186 %** |
+| upscale=2 | 3 | **3.1** | 26.7 | 1.40 | 26.2 | 26.1 | 20.0 | **148 %** |
+| concat+upscale=2 | 3 | 4.4 | 28.0 | **1.28** | 27.3 | 24.9 | 21.5 | **123 %** |
+
+- **Sensitivity clears the seed null in five of six configs.** This is the first
+  configuration measured here where swapping the instruction moves the rollout
+  decisively more than re-rolling the seed.
+- **B/C finally separates.** `sens C` > `sens B` in all six configs, and the gap
+  widens monotonically with guidance (C/B = 1.07 → 1.13 → 1.17 at CFG 1/3/7). At
+  16B the ordering was inconsistent and therefore uninterpretable.
+- **`concat3view` inverts** — see "Conclusions that transfer" below.
+- **`upscale=2` also inverts:** it *hurt* fidelity on Nano (28.3 vs 24.6) but
+  *helps* on Super (26.7 vs 28.5), while giving the same best-in-class floor of
+  3.1. `concat+upscale=2`, untested on any model before, gives Super's
+  closest-to-real motion (1.28) but beats the baseline on nothing else.
+- Floors match the Nano runs to within 0.1 across the board — expected, since all
+  three checkpoints share the `AutoencoderKLWan` VAE, and a useful check that the
+  metric is measuring what it claims.
+
+## The three models sit on one axis: faithful <-> responsive
+
+| | Policy-DROID 16B | general Nano 16B | general Super 64B |
+|---|---|---|---|
+| jitter vs reality | **0.52-0.89 — under-moves** | 1.06-1.50 — over-moves | **1.28-1.46 — over-moves** |
+| fidelity to real future | **19.4 (best)** | 24.6 | 26.2-31.3 (worst) |
+| sensitivity / own seed null | 77 % | 103 % | **119-186 %** |
+
+DROID post-training bought physical faithfulness, not language grounding.
+Scaling the generalist 16B -> 64B moves *further* along the same axis: more
+responsive to the instruction, less faithful to what actually happened. Nothing
+here gives both, so the choice still depends on whether Stage B needs a
+plausible image or a responsive one — but Super is the first configuration
+measured where the instruction beats the seed decisively.
 
 ## Conclusions that transfer
 
-- **`concat3view` wins on BOTH models.** Feeding the stitched three-view canvas
-  (the layout the DROID policy was post-trained on) gives the closest-to-real
-  motion of anything measured (jitter 1.06 general / 0.89 specialist) and roughly
-  halves drift. A two-model result, not a fluke. Best single lever found.
-- **CFG matters on the generalist, not the specialist.** On the general model it
-  is a clean monotonic dial: guidance 1→7 drives jitter 1.16→1.42 and
-  sensitivity 16.7→31.8. On Policy-DROID it changed fidelity not at all.
+- **`concat3view` wins on both 16B models — and is the WORST config on Super.**
+  On the Nanos the stitched three-view canvas (the layout the DROID policy was
+  post-trained on) gives the closest-to-real motion measured (jitter 1.06
+  general / 0.89 specialist) and roughly halves drift. On Super it inverts:
+  worst fidelity (38.9 vs 28.5 baseline) and worst drift (30.1 vs 21.8), with no
+  jitter benefit. It buys the highest sensitivity of any run (186 % of null) by
+  being unfaithful. **This was written up as "a two-model result, not a fluke" —
+  the third model breaks it.** Whatever the canvas does, it is not a property of
+  Cosmos 3 in general, and the layout argument does not explain Super, which was
+  never DROID-post-trained at all.
+- **CFG is a clean monotonic dial on both generalists, inert on the specialist.**
+  General Nano: guidance 1→7 drives jitter 1.16→1.42, sensitivity 16.7→31.8.
+  Super: sensitivity 18.2→26.7→32.1 at CFG 1/3/7 — nearly the same ladder, at 4x
+  the parameters. On Policy-DROID it changed fidelity not at all.
 - **`upscale` is the only image-quality knob, and it costs stability.** Output
   resolution is `min(input, tier canvas)` — `resolution_tier` alone does nothing
   because it never upscales. 2x gives the best reconstruction floor of any run
@@ -309,19 +375,20 @@ the choice depends on whether Stage B needs a plausible image or a responsive on
 
 Untested, in rough order of expected value:
 
-1. **`concat3view` + `upscale`** — the two winners are on independent axes
-   (stability from layout, sharpness from resolution). Needs tier 704/720 to
-   exceed the canvas ceiling. The obvious next experiment.
-2. **`concat3view` + `steps=4`** — stacks the two jitter reducers. Cheap.
-3. **Image-to-video mode on the general Nano.** Everything so far has been
-   `mode="policy"` (hardcoded, `run_experiment.py`), where video is a by-product
-   of an action model. I2V is what the general model is actually built for and is
-   the honest Stage-B analogue. Costs: no action chunk, and it expects long
-   JSON-upsampled captions rather than raw imperatives (an LLM rewrite between
-   our instruction and the model — decide deliberately and log it).
+1. **I2V through the A/B/C harness.** `run_experiment.py` hardcodes
+   `mode="policy"`, where video is a by-product of an action model. I2V is what a
+   general checkpoint is actually built for and is the honest Stage-B analogue;
+   `smoke_i2v.py` shows it runs and what a caption has to look like. Costs: no
+   action chunk, and captions must be JSON-upsampled rather than raw imperatives
+   (an LLM rewrite between our instruction and the model — log it deliberately).
+2. **Why `concat3view` inverts at 64B.** It is the best lever on both 16B models
+   and the worst config on Super. Until that is explained, no layout conclusion
+   from this harness should be trusted to generalise.
+3. **`concat3view` + `steps=4`** — stacks the two jitter reducers on Nano. Cheap.
 4. **Multi-seed averaging.** One seed per condition cannot resolve an effect that
-   sits at or below the seed null; averaging N seeds would.
-5. Seed nulls for the configs that lack them (~1 min each).
+   sits at or below the seed null; averaging N seeds would. Less pressing on
+   Super, where the effect is comfortably above its null.
+5. Seed nulls for the Nano configs that lack them (~1 min each).
 
 ## Gotchas that have bitten us
 
@@ -331,4 +398,14 @@ Untested, in rough order of expected value:
 - Cross-resolution **fidelity is not comparable** — `diff()` resamples onto a
   common grid. Trust the reconstruction floor, jitter ratio, and
   sensitivity-over-own-seed-null instead.
+- **Never hand `export_to_video` an ndarray.** It branches on type and treats an
+  ndarray as float `[0,1]`, multiplying by 255 — uint8 wraps modulo 256 into
+  garbage that still encodes and still plays. Four sweep configs were silently
+  corrupted this way. Frames must stay PIL through `save_sample`.
+- **The reconstruction floor is a corruption canary.** It should sit near 5 (it
+  is VAE loss, shared across all three checkpoints). ~130 means the pixels never
+  survived encoding, not that the model did badly.
+- **Odd frame dimensions kill ffmpeg.** libx264 + yuv420p needs even width and
+  height; `macro_block_size=1` does not cover that. `split_canvas` thirds are
+  routinely odd (concat+upscale at 720 gives 496x277) — `_even_dims` crops them.
 - Reports embed images, so each is ~20-30 MB; whole folders are ~300 MB.

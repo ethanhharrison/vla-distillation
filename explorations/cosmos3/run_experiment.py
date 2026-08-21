@@ -134,10 +134,36 @@ def split_canvas(frame: np.ndarray) -> dict[str, np.ndarray]:
     return {"wrist": frame[:top], "exterior_1": frame[top:, : w // 2], "exterior_2": frame[top:, w // 2:]}
 
 
+def _even_dims(frames) -> tuple[list, tuple[int, int] | None]:
+    """Crop frames to even width AND height, which libx264 + yuv420p requires.
+
+    `macro_block_size=1` accepts non-multiples of 16 but not odd sizes: ffmpeg
+    exits and `export_to_video` dies with `[Errno 32] Broken pipe`. Canvases are
+    routinely odd once `split_canvas` cuts them in thirds (concat+upscale at tier
+    720 gives 496x277). Crop rather than pad — a black bar would corrupt the
+    pixel differences every metric rests on, while one row is absorbed by
+    `diff()`, which resamples anyway.
+
+    MUST return PIL, never ndarray: `export_to_video` treats an ndarray as float
+    [0,1] and multiplies by 255, so uint8 wraps into garbage that still encodes
+    and still plays — silent corruption, visible only as a ~132 recon floor.
+    """
+    pil = [f if isinstance(f, Image.Image) else Image.fromarray(np.asarray(f)) for f in frames]
+    w, h = pil[0].size
+    if not (h % 2 or w % 2):
+        return pil, None
+    nw, nh = w - (w % 2), h - (h % 2)
+    return [f.crop((0, 0, nw, nh)) for f in pil], (h - nh, w - nw)
+
+
 def save_sample(out: Path, cam: str, frames, action, fps: float) -> None:
     from diffusers.utils import export_to_video
 
     out.mkdir(parents=True, exist_ok=True)
+    frames, cropped = _even_dims(frames)
+    if cropped:
+        print(f"    [{cam}] cropped {cropped[0]}px row / {cropped[1]}px col to make "
+              f"{frames[0].size[0]}x{frames[0].size[1]} encodable")  # PIL: .size is (w, h)
     export_to_video(frames, str(out / f"generated_{cam}.mp4"), fps=int(fps), macro_block_size=1)
     if action is not None:
         np.save(out / f"action_{cam}.npy", action)
@@ -278,7 +304,10 @@ def run(args) -> None:
         # there is no single episode_id — fall back to the set's layout string.
         "situations_dir": str(sit_dir),
         "episode_id": meta.get("episode_id") or meta.get("layout", "multiple episodes"),
-        "model_path": args.model_path, "model": "Cosmos3-Nano-Policy-DROID",
+        # Derived, not hardcoded: this harness is run against several checkpoints
+        # (Nano-Policy-DROID, the general Nano, Super), and a fixed string here
+        # silently mislabels every run that is not the first one.
+        "model_path": args.model_path, "model": Path(args.model_path).name,
         "action_mode": "policy", "domain_name": "droid_lerobot",
         "action_space": "10D EEF pose delta (3D translation + 6D rotation) + gripper, model-normalized",
         "cameras": args.cameras, "fps": args.fps, "chunk_size": args.chunk_size,
