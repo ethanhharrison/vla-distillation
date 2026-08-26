@@ -11,10 +11,11 @@ sampled step.
 ```
 vla-distillation/
 ├── configs/
-│   └── language_instruction/  # YAML multi-call Stage A configs
+│   ├── language_instruction/  # YAML multi-call Stage A configs
+│   └── dense_description/     # YAML for dense change-of-state clips
 ├── scripts/
-│   ├── download_dataset.py            # download DROID TFRecords from GCS
-│   ├── view_dataset.py                # inspect a TFRecord's structure / dump frames
+│   ├── summarize_language_instructions.py  # HTML report for Stage A runs
+│   ├── summarize_dense_descriptions.py     # HTML report for dense-description runs
 │   ├── prepare_subgoal_examples.py    # build a Stage B example set from a DROID episode
 │   └── summarize_subgoal_images.py    # HTML contact sheet for a Stage B run
 ├── pipeline/
@@ -25,6 +26,9 @@ vla-distillation/
 │   │   ├── pricing.py          # token accounting + approximate USD cost estimation
 │   │   ├── generate.py         # single-call orchestration + CLI
 │   │   └── pipeline.py         # multi-call YAML orchestration + CLI
+│   ├── dense_description/      # dense change-of-state descriptions over clips
+│   │   ├── prompts.py          # start/end-frame change prompt
+│   │   └── generate.py         # clip splitting + VLM orchestration + CLI
 │   └── subgoal_image/          # Stage B: instruction-conditioned subgoal images
 │       ├── backends.py         # swappable image-edit backends (Gemini / OpenAI / real_future / dummy)
 │       ├── prompts.py          # subgoal prompt templates
@@ -195,6 +199,41 @@ step_interval: 25
   - open the top drawer
   (image) shoulder_image_1: outputs/language_instruction_images/success-00188/step0000_shoulder_image_1.jpeg
   ...
+```
+
+## 2b. Generate dense descriptions
+
+Split a trajectory into fixed-duration clips (default **2s @ 15 fps → 30
+frames**) and ask a VLM how the scene changes from each clip's first frame to
+its last, conditioned on the episode language instruction:
+
+```bash
+uv run python -m pipeline.dense_description.generate \
+  --config configs/dense_description/default.yaml
+
+# or pass a tfrecord directly:
+uv run python -m pipeline.dense_description.generate \
+  datasets/droid/success/success-00285.tfrecord \
+  --provider gemini --clip-seconds 2 --save-images --max-clips 3
+```
+
+Outputs go under `outputs/dense_descriptions/` (optional start/end frames under
+`outputs/dense_description_images/<record>/`). Each clip block looks like:
+
+```
+[clip 0] steps 0-29
+  language: Cover the green object with the blue towel
+  description: The arm draws the blue towel across the counter toward the green object...
+  (image) start/shoulder_image_1: ...
+  (image) end/shoulder_image_1: ...
+```
+
+Visualize a run (start vs end frames + description per clip):
+
+```bash
+uv run python scripts/summarize_dense_descriptions.py \
+  outputs/dense_descriptions/success-00285_gemini_20260821-134039.txt \
+  --open
 ```
 
 ## Estimating cost

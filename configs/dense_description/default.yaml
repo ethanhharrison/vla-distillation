@@ -1,0 +1,22 @@
+# Dense change-of-state descriptions over 2s trajectory clips.
+#
+#   .venv/bin/python -m pipeline.dense_description.generate \
+#       --config configs/dense_description/default.yaml
+#
+# CLI flags override YAML values when both are provided.
+
+record: datasets/droid/success/success-00285.tfrecord
+example_index: 0
+provider: gemini
+# model: gemini-robotics-er-2-preview
+clip_seconds: 2
+fps: 15
+# max_clips: 3
+save_images: true
+estimate_cost: true
+# language_instruction: optional override of metadata language_instruction1
+# output: outputs/dense_descriptions/my_run.txt
+# cameras:
+#   - shoulder_image_1
+#   - shoulder_image_2
+#   - wrist_image
