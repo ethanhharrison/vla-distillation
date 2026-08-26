@@ -22,3 +22,10 @@ uv.lock
 # explore/image_edit: generated subgoals + reports (runs on the main venv)
 /explorations/image_edit/results/
 /explorations/image_edit/*.log
+
+# explore/wan: generated clips + run logs (runs on the cosmos3 venv).
+# `results` is a SYMLINK to /raid — the home fs is at 100%. Both forms are
+# needed: a trailing-slash pattern does not match a symlink.
+/explorations/wan/results
+/explorations/wan/results/
+/explorations/wan/*.log
