@@ -22,6 +22,7 @@ from .backends import (
     is_paid_backend,
     register_image_backend,
 )
+from .edit import EditOutcome, edit_cache_key, edit_camera
 from .generate import SubgoalConfig, SubgoalRun, generate_subgoals
 from .prompts import (
     DEFAULT_TEMPLATE,
@@ -34,6 +35,7 @@ from .prompts import (
 __all__ = [
     "DEFAULT_TEMPLATE",
     "TEMPLATES",
+    "EditOutcome",
     "ImageEditBackend",
     "SubgoalConfig",
     "SubgoalRequest",
@@ -42,6 +44,8 @@ __all__ = [
     "available_image_backends",
     "build_image_backend",
     "build_prompt",
+    "edit_cache_key",
+    "edit_camera",
     "generate_subgoals",
     "is_paid_backend",
     "register_image_backend",

@@ -44,14 +44,14 @@ except ImportError:
 
 from . import prompts
 from .backends import (
-    SubgoalRequest,
     available_image_backends,
     build_image_backend,
     is_paid_backend,
 )
 from .cache import BlobCache
-from .cost import BudgetExceeded, CostTracker
-from .imaging import downscale, image_size, is_png, phash_delta, request_key, sha256_hex
+from .cost import CostTracker
+from .edit import edit_camera
+from .imaging import downscale, image_size, phash_delta
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "subgoal_images"
@@ -236,8 +236,12 @@ def _produce_camera(
     cache, tracker, img_out, ex_id, vkey, use_cache=True,
 ) -> dict | None:
     """Produce one subgoal camera image (cached or paid). Returns the record, or
-    None if the budget ceiling was hit (signals the caller to stop)."""
-    src_sha = sha256_hex(src_bytes)
+    None if the budget ceiling was hit (signals the caller to stop).
+
+    The cache/ceiling/call sequence itself lives in `edit.edit_camera`, shared
+    with the evaluation harness; this function owns only the on-disk record
+    format that `scripts/summarize_subgoal_images.py` reads.
+    """
     src_native = img_out / f"{ex_id}__{cam}__source.jpg"
     if not src_native.exists():
         src_native.write_bytes(src_bytes)
@@ -251,51 +255,23 @@ def _produce_camera(
         "cost_usd": 0.0, "error": None, "phash": None, "native_size": None, "meta": {},
     }
 
-    if backend == "real_future":
-        key = request_key("real_future", cam,
-                          sha256_hex(fut_bytes) if fut_bytes else "none", k)
-    else:
-        key = request_key(backend, be.model, getattr(be, "quality", ""),
-                          getattr(be, "size", ""), getattr(be, "input_fidelity", ""),
-                          cam, prompt_text, src_sha)
+    outcome = edit_camera(
+        backend_name=backend, backend=be, camera=cam, source_bytes=src_bytes,
+        instruction=instruction, prompt=prompt_text, future_bytes=fut_bytes, k=k,
+        cache=cache, tracker=tracker, use_cache=use_cache, example_id=ex_id,
+    )
+    if outcome.over_budget:
+        print(f"BUDGET CEILING HIT: {outcome.error}")
+        return None
+    if not outcome.ok:
+        rec.update(kind=outcome.kind, error=outcome.error, cost_usd=0.0)
+        print(f"  ! {ex_id} {vkey} {cam}: {outcome.error}")
+        return rec
+    rec.update(kind=outcome.kind, cached=outcome.cached, cost_usd=outcome.cost_usd,
+               meta=outcome.meta)
 
-    cached = cache.lookup(key) if (use_cache and backend != "dummy_image") else None
-    if cached is not None:
-        img_bytes = cache.get_blob(cached["blob"])
-        rec.update(kind=cached.get("kind"), cached=True, cost_usd=0.0,
-                   meta=cached.get("meta", {}))
-        tracker.record(backend=backend, model=be.model, cost_usd=0.0, cached=True,
-                       example_id=ex_id, camera=cam, note="cache hit")
-    else:
-        est = be.estimate_cost()
-        if be.is_paid:
-            try:
-                tracker.precheck(est, what=f"{backend}/{cam}")
-            except BudgetExceeded as e:
-                print(f"BUDGET CEILING HIT: {e}")
-                return None
-        result = be.edit(SubgoalRequest(
-            source_bytes=src_bytes, camera=cam, instruction=instruction,
-            prompt=prompt_text, future_bytes=fut_bytes, k=k,
-        ))
-        if result.error or result.image_bytes is None:
-            rec.update(kind=result.kind, error=result.error or "no image", cost_usd=0.0)
-            tracker.record(backend=backend, model=be.model, cost_usd=0.0, cached=False,
-                           example_id=ex_id, camera=cam, note=f"ERROR: {result.error}")
-            print(f"  ! {ex_id} {vkey} {cam}: {result.error}")
-            return rec
-        img_bytes = result.image_bytes
-        paid = be.is_paid
-        tracker.record(backend=backend, model=be.model, cost_usd=result.cost_usd_est,
-                       cached=(not paid), example_id=ex_id, camera=cam)
-        rec.update(kind=result.kind, cost_usd=(result.cost_usd_est if paid else 0.0),
-                   meta=result.meta)
-        if backend != "dummy_image" and use_cache:
-            blob = cache.put_blob(img_bytes, result.ext)
-            cache.store(key, {"blob": blob, "kind": result.kind, "meta": result.meta,
-                              "cost_usd_est": result.cost_usd_est})
-
-    ext = "png" if is_png(img_bytes) else "jpg"
+    img_bytes = outcome.image_bytes
+    ext = outcome.ext
     tag = vkey.replace(":", "_")
     sg_native = img_out / f"{ex_id}__{tag}__{cam}__subgoal.{ext}"
     sg_native.write_bytes(img_bytes)
