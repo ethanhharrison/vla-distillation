@@ -44,7 +44,11 @@ def resolve_run_file(target: str) -> Path:
 
 
 def parse_run(path: Path) -> dict:
-    """Parse a dense-description .txt into {info, metadata, clips}."""
+    """Parse a dense-description .txt into {info, metadata, clips}.
+
+    Descriptions may span multiple lines (one section per camera). Continuation
+    lines are collected until the next clip header, `language:`, or `(image)` line.
+    """
     lines = path.read_text().splitlines()
     separator = next(
         (i for i, line in enumerate(lines) if set(line) == {"="} and len(line) >= 10),
@@ -69,10 +73,22 @@ def parse_run(path: Path) -> dict:
 
     clips: list[dict] = []
     current: dict | None = None
+    in_description = False
+    desc_lines: list[str] = []
+
+    def _flush_description() -> None:
+        nonlocal in_description, desc_lines
+        if current is not None and (in_description or desc_lines):
+            # Keep internal blank lines; trim only the outer edges.
+            current["description"] = "\n".join(desc_lines).strip()
+        in_description = False
+        desc_lines = []
+
     for line in body:
         stripped = line.strip()
         match = CLIP_HEADER.match(stripped)
         if match:
+            _flush_description()
             if current is not None:
                 clips.append(current)
             current = {
@@ -85,13 +101,18 @@ def parse_run(path: Path) -> dict:
                 "end_images": {},
             }
             continue
-        if current is None or not stripped:
+        if current is None:
             continue
         if stripped.startswith("language:"):
+            _flush_description()
             current["language"] = stripped[len("language:") :].strip()
         elif stripped.startswith("description:"):
-            current["description"] = stripped[len("description:") :].strip()
+            _flush_description()
+            in_description = True
+            first = stripped[len("description:") :].strip()
+            desc_lines = [first] if first else []
         elif stripped.startswith("(image) "):
+            _flush_description()
             rest = stripped[len("(image) ") :]
             label, _, image_path = rest.partition(": ")
             role, _, camera = label.partition("/")
@@ -101,6 +122,9 @@ def parse_run(path: Path) -> dict:
                 current["end_images"][camera or label] = image_path
             else:
                 current["start_images"][label] = image_path
+        elif in_description:
+            desc_lines.append(stripped)
+    _flush_description()
     if current is not None:
         clips.append(current)
 
@@ -159,6 +183,60 @@ def _frame_row(label: str, images: dict[str, str]) -> str:
     )
 
 
+CAMERA_SECTION = re.compile(r"^([A-Za-z0-9_]+):\s*(.*)$")
+
+
+def _split_camera_sections(text: str) -> list[tuple[str | None, str]]:
+    """Split a multi-camera description into (camera_name|None, body) pairs."""
+    if not text.strip():
+        return []
+    sections: list[tuple[str | None, list[str]]] = []
+    current_cam: str | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_lines
+        body = "\n".join(current_lines).strip()
+        if current_cam is not None or body:
+            sections.append((current_cam, body))
+        current_lines = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        match = CAMERA_SECTION.match(line)
+        # Treat "shoulder_image_1:" / "wrist_image: ..." as section headers.
+        if match and (
+            "image" in match.group(1).lower()
+            or match.group(1).lower().startswith(("cam", "wrist", "shoulder", "exterior"))
+        ):
+            flush()
+            current_cam = match.group(1)
+            rest = match.group(2).strip()
+            current_lines = [rest] if rest else []
+        else:
+            current_lines.append(line)
+    flush()
+    return [(cam, body) for cam, body in sections]
+
+
+def _render_description(text: str) -> str:
+    """Render a (possibly multi-camera) dense description as HTML."""
+    sections = _split_camera_sections(text)
+    if not sections:
+        return "<p><em>(empty)</em></p>"
+    # Single unsectioned blob (older single-paragraph runs).
+    if len(sections) == 1 and sections[0][0] is None:
+        return f'<p class="description-body">{html.escape(sections[0][1])}</p>'
+    blocks = []
+    for cam, body in sections:
+        title = html.escape(cam) if cam else "Description"
+        blocks.append(
+            f'<div class="cam-section"><h5>{title}</h5>'
+            f'<p class="description-body">{html.escape(body)}</p></div>'
+        )
+    return "".join(blocks)
+
+
 def render_html(run: dict, source: Path) -> str:
     info = run["info"]
     provider = info.get("provider", "?")
@@ -199,7 +277,7 @@ def render_html(run: dict, source: Path) -> str:
               </div>
               <div class="description">
                 <h4>Dense description</h4>
-                <p>{html.escape(clip.get("description") or "(empty)")}</p>
+                {_render_description(clip.get("description") or "")}
               </div>
             </section>
             """
@@ -233,9 +311,12 @@ def render_html(run: dict, source: Path) -> str:
   figcaption {{ font-size: 12px; color: #888; text-align: center; margin-top: 4px; }}
   .description {{ margin-top: 14px; padding: 12px 14px; background: #8881;
                  border-radius: 8px; }}
-  .description h4 {{ margin: 0 0 6px; font-size: 13px; color: #555;
+  .description h4 {{ margin: 0 0 8px; font-size: 13px; color: #555;
                     text-transform: uppercase; letter-spacing: 0.04em; }}
-  .description p {{ margin: 0; }}
+  .description-body {{ margin: 0; white-space: pre-wrap; }}
+  .cam-section {{ margin: 0 0 10px; }}
+  .cam-section:last-child {{ margin-bottom: 0; }}
+  .cam-section h5 {{ margin: 0 0 4px; font-size: 13px; color: #1565c0; }}
   .missing {{ width: 240px; height: 135px; display: flex; align-items: center;
              justify-content: center; background: #8881; border-radius: 6px;
              font-size: 12px; color: #c33; padding: 8px; text-align: center; }}

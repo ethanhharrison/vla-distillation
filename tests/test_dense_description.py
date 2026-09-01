@@ -70,6 +70,10 @@ def test_build_dense_prompt_mentions_start_end_and_language():
     assert "shoulder_image_1, wrist_image" in prompt
     assert "steps 0–29" in prompt or "steps 0-29" in prompt
     assert "START" in prompt and "END" in prompt
+    assert "For EACH camera separately" in prompt
+    assert "at least one full sentence" in prompt
+    assert "numeric" not in prompt.lower()
+    assert "5 cm" not in prompt
 
 
 def test_parse_description_strips_wrappers():
@@ -246,7 +250,11 @@ def test_visualizer_parses_dense_run_and_renders_html(tmp_path):
                 "=" * 60,
                 "[clip 0] steps 0-29",
                 "  language: Cover the object",
-                "  description: The towel slides over the green object.",
+                "  description: shoulder_image_1:",
+                "The towel slides ~5 cm over the green object.",
+                "",
+                "wrist_image:",
+                "The gripper closes around the towel edge.",
                 f"  (image) start/wrist_image: {start}",
                 f"  (image) end/wrist_image: {end}",
                 "",
@@ -258,11 +266,16 @@ def test_visualizer_parses_dense_run_and_renders_html(tmp_path):
     assert len(run["clips"]) == 1
     assert run["clips"][0]["start_step"] == 0
     assert run["clips"][0]["end_step"] == 29
-    assert "towel" in run["clips"][0]["description"]
+    desc = run["clips"][0]["description"]
+    assert "towel slides ~5 cm" in desc
+    assert "wrist_image:" in desc
+    assert "gripper closes" in desc
     assert "wrist_image" in run["clips"][0]["start_images"]
 
     html = render_html(run, run_path)
     assert "Dense descriptions" in html
-    assert "The towel slides over the green object." in html
+    assert "towel slides ~5 cm" in html
+    assert "shoulder_image_1" in html
+    assert "cam-section" in html
     assert "Clip 0" in html
     assert "data:image/jpeg;base64," in html
