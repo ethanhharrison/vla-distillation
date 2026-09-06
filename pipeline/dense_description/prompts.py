@@ -63,6 +63,65 @@ def build_dense_prompt(
     )
 
 
+DENSE_VIDEO_PROMPT = """You are labeling a robot manipulation dataset.
+
+You are shown a single video of a robot arm over a short clip of the \
+trajectory. The frame is split into two stacked views, playing forward \
+together at {fps:g} fps for the whole clip:
+- TOP half: {top_camera}
+- BOTTOM half: {bottom_camera}
+
+Clip span: steps {start_step}-{end_step} of {total} (about {clip_seconds:g}s).
+
+The language instruction associated with this trajectory is:
+"{language_instruction}"
+
+Write a dense natural-language description of how the robot and environment \
+change over the course of this clip. Track the motion continuously rather \
+than only comparing the first and last moment — use what happens in between \
+to describe how things move, not just where they end up. Relate the change to \
+carrying out the language instruction when it is visible.
+
+Guidelines:
+- Be very specific and visual: name the robot links/gripper, contacted \
+objects, directions of motion, and relative positions.
+- Anything that moves or changes state must get at least one full sentence \
+describing that change in detail (what moved, how it moved, and where it \
+ends relative to the start). Do not summarize several motions in a vague \
+phrase — give each notable change its own clear sentence.
+- If the two views disagree or one occludes the relevant motion, say so \
+rather than guessing.
+- Do NOT invent objects that are not visible in the video.
+- Do NOT merely restate the language instruction; describe the change you see.
+- No preamble like "Here is the description:". No bullet lists.
+"""
+
+
+def build_dense_video_prompt(
+    *,
+    language_instruction: str,
+    cameras: tuple[str, str],
+    start_step: int,
+    end_step: int,
+    total: int,
+    clip_seconds: float,
+    fps: float,
+    template: str = DENSE_VIDEO_PROMPT,
+) -> str:
+    """Render the dense-description video prompt for one clip."""
+    top_camera, bottom_camera = cameras
+    return template.format(
+        language_instruction=language_instruction,
+        top_camera=top_camera,
+        bottom_camera=bottom_camera,
+        start_step=start_step,
+        end_step=end_step,
+        total=total,
+        clip_seconds=clip_seconds,
+        fps=fps,
+    )
+
+
 def parse_description(text: str) -> str:
     """Normalize a VLM response into a single dense description string."""
     cleaned = text.strip()

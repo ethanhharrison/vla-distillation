@@ -61,6 +61,7 @@ class DenseConfig:
     clip_seconds: float = DEFAULT_CLIP_SECONDS
     fps: float = DROID_FPS
     max_clips: int | None = None
+    start_step: int = 0
     language_instruction: str | None = None
     output_path: Path | None = None
     save_images: bool = False
@@ -128,19 +129,21 @@ def resolve_language_instruction(
     )
 
 
-def clip_boundaries(length: int, clip_frames: int) -> list[tuple[int, int]]:
-    """Non-overlapping (start, end) inclusive step pairs covering the trajectory.
+def clip_boundaries(length: int, clip_frames: int, start_step: int = 0) -> list[tuple[int, int]]:
+    """Non-overlapping (start, end) inclusive step pairs covering the trajectory,
+    starting at `start_step` instead of 0 (useful for sampling later, more
+    eventful parts of a long trajectory without describing everything before it).
 
     The final partial clip is kept when it still has at least 2 frames so the
     start and end views differ. Shorter leftovers are dropped.
     """
     if clip_frames < 2:
         raise ValueError(f"clip_frames must be >= 2, got {clip_frames}")
-    if length < 2:
+    if length - start_step < 2:
         return []
 
     bounds: list[tuple[int, int]] = []
-    start = 0
+    start = start_step
     while start < length:
         end = min(start + clip_frames - 1, length - 1)
         if end <= start:
@@ -213,7 +216,7 @@ def generate_dense_descriptions(
     language = resolve_language_instruction(
         trajectory.metadata, config.language_instruction
     )
-    bounds = clip_boundaries(trajectory.length, config.clip_frames)
+    bounds = clip_boundaries(trajectory.length, config.clip_frames, config.start_step)
     if config.max_clips is not None:
         bounds = bounds[: config.max_clips]
 
@@ -460,6 +463,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Only describe the first N clips (useful for quick runs).",
     )
     parser.add_argument(
+        "--start-step",
+        type=int,
+        default=None,
+        help="Start clipping from this trajectory step instead of 0 "
+        "(useful for sampling later, more eventful parts of a long trajectory).",
+    )
+    parser.add_argument(
         "--language-instruction",
         default=None,
         help="Override the trajectory metadata language instruction.",
@@ -513,6 +523,8 @@ def resolve_config(args: argparse.Namespace) -> DenseConfig:
         config.fps = args.fps
     if args.max_clips is not None:
         config.max_clips = args.max_clips
+    if args.start_step is not None:
+        config.start_step = args.start_step
     if args.language_instruction is not None:
         config.language_instruction = args.language_instruction
     if args.output is not None:

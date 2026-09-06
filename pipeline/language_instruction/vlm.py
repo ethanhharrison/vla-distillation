@@ -40,6 +40,9 @@ class VLM(ABC):
     def generate(self, prompt: str, images: list[bytes]) -> str:
         raise NotImplementedError("Base VLM Class does not have built-in generate function")
 
+    def generate_video(self, prompt: str, video: bytes, mime_type: str = "video/mp4") -> str:
+        raise NotImplementedError(f"{type(self).__name__} does not support video input")
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}(model={self.model!r})"
 
@@ -138,6 +141,23 @@ class GeminiVLM(VLM):
         )
         return response.text or ""
 
+    def generate_video(self, prompt: str, video: bytes, mime_type: str = "video/mp4") -> str:
+        parts: list = [
+            types.Part.from_text(text=prompt),
+            types.Part.from_bytes(data=video, mime_type=mime_type),
+        ]
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=parts,
+            **self.extra,
+        )
+        meta = response.usage_metadata
+        self.usage.add(
+            input_tokens=meta.prompt_token_count if meta else 0,
+            output_tokens=meta.candidates_token_count if meta else 0,
+        )
+        return response.text or ""
+
 @register_vlm("hf")
 class HuggingFaceVLM(VLM):
     """Local image-text-to-text backend running downloaded weights via `transformers`."""
@@ -188,3 +208,7 @@ class DummyVLM(VLM):
     def generate(self, prompt: str, images: list[bytes]) -> str:
         self.usage.add()
         return "Pick up the object on the table\nMove the arm toward the target\nPlace the item at the goal location"
+
+    def generate_video(self, prompt: str, video: bytes, mime_type: str = "video/mp4") -> str:
+        self.usage.add()
+        return "The arm reaches toward the object, closes the gripper around it, and lifts it clear of the surface."
