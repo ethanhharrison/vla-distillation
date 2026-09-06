@@ -3,7 +3,8 @@
 **Status: exploration / evidence, not integrated.** Both models have now been run
 over the full `situations_multitraj` grid — the same 8 trajectories, conditions
 and cameras as the Cosmos 3 and DreamZero tables — so the numbers below are
-directly comparable to theirs. Single draw per condition; see the caveats.
+directly comparable to theirs. Single draw per condition; see the caveats. A
+**multi-view canvas** variant of the same protocol is measured further down.
 
 Puts `pipeline/subgoal_image`'s hosted editors — Gemini and OpenAI — on the same
 protocol as [`../cosmos3`](../cosmos3) and [`../dreamzero`](../dreamzero): the
@@ -123,6 +124,53 @@ The full `situations_multitraj` grid is 8 situations x 5 instructions x 3 camera
 whose projection exceeds `--ceiling` **refuses to start** rather than aborting
 halfway and leaving a run that cannot be analysed.
 
+## Multi-view: can one call produce all three views?
+
+`pipeline/subgoal_image` edits each camera with its own independent call, so
+nothing makes the three views agree — an object can move in `exterior_1` and sit
+still in `exterior_2`. Two ways to ask for them together were measured, both
+against that independent baseline.
+
+**Canvas** stitches the three views into one image, edits it in a single call and
+splits the result back apart. It works. Across `canvas_grid2x2` and
+`canvas_cosmos`, **96/96 items came back with every panel in its own position** —
+conditions A, B, C and N alike, so the composite survives even "fold the
+laundry". Aspect is preserved to within 0.003 (including `gpt-image-2`, whose
+documented sizes are only 1024²/1536×1024/1024×1536 — with `size="auto"` that
+does not bind), panels return at usable resolution, and the deliberately-black
+fourth `grid2x2` cell stays black. It is also 3x cheaper per situation: one call,
+not three.
+
+**Multi-turn** is possible on both providers and useful on neither. Gemini's
+`client.chats.create` runs, but from turn 2 it abandons the frame you gave it and
+synthesizes a new scene (`vs src` 59–75 against real motion of 6.7–15.2). OpenAI's
+Responses API with `previous_response_id` is a genuine conversation and does keep
+the frame, but edits at 5.8–7.0, i.e. its own no-op floor. Not pursued further.
+
+### The canvas result, on this harness's protocol
+
+| run | noop | edit | real | fidel | sensB | sensC | null | **s/null** |
+|---|---|---|---|---|---|---|---|---|
+| `gemini_flash_3_1_full` (single-frame) | 3.7 | 5.7 | 24.7 | 25.8 | 7.1 | 8.6 | 6.0 | **132 %** |
+| `canvas_grid2x2` | 4.7 | 9.2 | 24.7 | 26.6 | 10.3 | 11.4 | 10.4 | **105 %** |
+| `canvas_cosmos` | 4.3 | 7.6 | 24.7 | 27.2 | 9.1 | 10.8 | 8.2 | **122 %** |
+
+- **The canvas edits more, and it is not obviously reading the instruction more.**
+  Raw sensitivity rises (10.3/11.4 against 7.1/8.6) but the resample null rises
+  with it (10.4 and 8.2 against 6.0), so sensitivity over its own null *falls*.
+  `grid2x2` at 105 % is barely above its null. This is the cosmos3 lesson again:
+  the null is not a constant across configs, and a raw sensitivity comparison
+  between configs is misleading.
+- On condition A alone the canvas is a clear win — measured against each
+  strategy's own no-op floor, Gemini's attributable edit goes 2.0 -> 4.6
+  (`multiview_gemini_full`). "Edits more" and "edits more *specifically*" came
+  apart, and only measuring the canvas null separated them.
+- `C > B` holds in all three runs. Fidelity is slightly worse under canvas, and
+  all three remain worse than simply copying the source frame (24.7).
+- An earlier n=2 probe suggested the canvas starves the wrist panel. **It does
+  not** — on the full grid the wrist gains (6.5 attributable vs 4.6 independent).
+  That claim was noise.
+
 ## What's here
 
 | file | what |
@@ -132,6 +180,9 @@ halfway and leaving a run that cannot be analysed.
 | `make_report.py` | HTML contact sheet, cosmos3 layout: source + real future + subgoal per condition, 3 cameras per row |
 | `analyze.py` | the cross-run table (`noop / edit / real / fidelity / sensB / sensC / null`) |
 | `metrics.py` | the pixel metrics, in one place so the three scripts cannot disagree |
+| `canvas.py` | composite geometry, prompt suffix, cache key and the one paid canvas call — shared by the scripts below so they cannot drift |
+| `multiview_probe.py` | the go/no-go probe: independent vs canvas vs multiturn on condition A, with per-strategy no-op floors |
+| `make_multiview_report.py` | HTML for a probe run (floor-corrected, per-camera) |
 
 Situation sets and `conditions.json` are **not** rebuilt here — reuse
 `../cosmos3/prepare_situations.py` and `../dreamzero/prepare_instructions.py`.
@@ -157,6 +208,18 @@ $P run_experiment.py --backend openai_image --run-name openai_gpt_image_2 \
 $P resample_null.py --run openai_gpt_image_2 --ceiling 0.20
 $P make_report.py   --run openai_gpt_image_2 --open
 $P analyze.py --runs openai_gpt_image_2 gemini_flash_3_1
+
+# multi-view: the full A/B/C protocol over a stitched canvas (one call per prompt).
+# Renders through the SAME make_report.py, so a canvas run and a single-frame run
+# are the same format by construction rather than by imitation.
+$P run_experiment.py --strategy canvas --canvas-layout grid2x2 --noop \
+    --run-name canvas_grid2x2 --ceiling 4.5
+$P resample_null.py --run canvas_grid2x2 --repeats 3 --ceiling 0.5
+$P make_report.py   --run canvas_grid2x2 --open
+$P analyze.py --runs gemini_flash_3_1_full canvas_grid2x2 canvas_cosmos
+
+# the cheaper probe (condition A only, both layouts + multiturn)
+$P multiview_probe.py --dry-run
 ```
 
 Reruns are $0: edits are served from the Stage B content-addressed cache
@@ -190,6 +253,23 @@ re-running after any change here:
   derived from the token usage the API reports and is what lands in
   `costs.jsonl`. On the reference call they are $0.010 vs $0.0064.
 
+### Canvas gotchas
+
+- **Canvases are sent as PNG, and `ImageEditBackend.edit()` is bypassed for them.**
+  `GeminiImageBackend.edit` hardcodes `mime_type="image/jpeg"` because the pipeline
+  feeds it JPEG frames. Declaring jpeg for png bytes would also make a cached
+  condition A inconsistent with a freshly-called B, which is exactly the |B - A|
+  the sensitivity number is built on. `canvas.single_edit` owns the call instead.
+- **The no-op prompt is passed through verbatim for canvases**, with no
+  "keep the grid" language — adding it would help the model hold the layout and
+  so understate the tax the condition exists to measure.
+- **A canvas run needs its own resample null.** `resample_null.py` re-issues the
+  canvas request when `index.json` says `strategy: canvas`; before that it would
+  have measured a single-frame null and filed it as the canvas run's control.
+- **Cache keys in `canvas.py` are load-bearing** — the camera label is
+  `canvas:<layout>` and the parameter order is fixed. Changing either silently
+  re-pays for every canvas edit already bought.
+
 ## Not done
 
 Untested, in rough order of expected value:
@@ -208,3 +288,10 @@ Untested, in rough order of expected value:
 4. **`gemini-3-pro-image`** — available, ~$0.18/image, unmeasured.
 5. Per-camera breakdown. The wrist view dominates the null in both video
    harnesses; the aggregates above may be hiding the same effect here.
+6. **Why the canvas null is ~2x the single-frame null.** It is the whole reason
+   the canvas loses on sensitivity-over-null, and it is unexplained. Both canvas
+   nulls are 3 draws on one situation; widening that is the cheapest next step.
+7. **The canvas on `gpt-image-2`.** Only condition A was run there
+   (`multiview_openai_full`) and it regressed — attributable edit 3.7 -> 2.0 — so
+   the full protocol was not paid for. Worth ~$0.4 if the layout question
+   resurfaces.

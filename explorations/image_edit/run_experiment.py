@@ -70,6 +70,11 @@ from pipeline.subgoal_image.cost import CostTracker  # noqa: E402
 from pipeline.subgoal_image.edit import edit_camera  # noqa: E402
 from pipeline.subgoal_image.imaging import phash_delta  # noqa: E402
 
+from PIL import Image  # noqa: E402
+
+import canvas as canvas_mod  # noqa: E402
+from metrics import load_rgb_bytes  # noqa: E402
+
 DEFAULT_SITUATIONS = HERE.parent / "cosmos3/results/situations_multitraj"
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "outputs" / "subgoal_images" / "cache"
 CAMERAS = ("exterior_1", "exterior_2", "wrist")
@@ -112,13 +117,86 @@ def conditions_for(sdir: Path, keep: list[str] | None, noop: bool) -> dict[str, 
 
 
 def count_calls(sit_dir: Path, situations: list[str], cameras: list[str],
-                keep: list[str] | None, noop: bool) -> int:
+                keep: list[str] | None, noop: bool, strategy: str = "independent") -> int:
     total = 0
     for sid in situations:
         conds = conditions_for(sit_dir / sid, keep, noop)
         present = [c for c in cameras if (sit_dir / sid / "history" / f"{c}_0.png").exists()]
-        total += sum(len(v) for v in conds.values()) * len(present)
+        # canvas: one call produces all three views, so the per-camera factor drops
+        per_prompt = 1 if strategy == "canvas" else len(present)
+        total += sum(len(v) for v in conds.values()) * per_prompt
     return total
+
+
+def _run_canvas_sample(*, args, backend, sdir: Path, cameras: list[str], rec: dict,
+                       out: Path, sample_id: str, prompt_text: str, is_noop: bool,
+                       cache, tracker, instruction: str) -> bool:
+    """One canvas call for a whole sample; writes the split panels into the
+    per-camera schema this harness already uses.
+
+    That schema choice is the point: `make_report.py`, `analyze.py` and
+    `resample_null.py` then need no idea a canvas was involved, so a canvas run
+    is rendered and analysed by exactly the same code as a single-frame run and
+    the two are comparable by construction. Returns True if the budget aborted.
+    """
+    layout = args.canvas_layout
+    srcs = {c: (sdir / "history" / f"{c}_0.png").read_bytes() for c in cameras
+            if (sdir / "history" / f"{c}_0.png").exists()}
+    if len(srcs) < len(cameras):
+        print(f"  skip {sample_id}: only {len(srcs)}/{len(cameras)} cameras on disk")
+        return False
+
+    canvas_bytes, _, src_panels = canvas_mod.build(layout, srcs)
+    prompt = canvas_mod.canvas_prompt(prompt_text,
+                                      noop_prompt=NOOP_PROMPT if is_noop else None)
+    try:
+        res = canvas_mod.edit_canvas(
+            backend_name=args.backend, backend=backend, layout=layout, prompt=prompt,
+            canvas_bytes=canvas_bytes, cache=cache, tracker=tracker,
+            use_cache=not args.no_cache, example_id=sample_id)
+    except canvas_mod.Aborted as exc:
+        print(f"BUDGET CEILING HIT: {exc}")
+        return True
+
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "canvas_source.png").write_bytes(canvas_bytes)
+    if res["error"]:
+        # One failure loses all three views at once — the cost of sharing a call.
+        for cam in cameras:
+            rec["cameras"][cam] = {"image": None, "error": res["error"]}
+        print(f"  ! {sample_id} [canvas:{layout}]: {res['error']}")
+        return False
+
+    (out / "canvas_output.png").write_bytes(res["image"])
+    out_panels = canvas_mod.split(layout, load_rgb_bytes(res["image"]))
+    chk = canvas_mod.layout_check(out_panels, src_panels)
+    # One paid call yields three panels, so the call cost is split evenly across
+    # them: any per-camera sum then still totals the true spend.
+    share = round(res["cost_usd"] / max(1, len(cameras)), 6)
+    for cam in cameras:
+        name = f"subgoal_{cam}.png"
+        Image.fromarray(out_panels[cam].astype("uint8")).save(out / name)
+        rec["cameras"][cam] = {
+            "image": name,
+            "cached": res["cached"],
+            "cost_usd": share,
+            "latency_s": res["meta"].get("latency_s"),
+            "phash_norm": phash_delta(
+                canvas_mod.png_bytes(Image.fromarray(src_panels[cam].astype("uint8"))),
+                (out / name).read_bytes())["norm"],
+            "usage": res["meta"].get("usage"),
+        }
+    rec["canvas"] = {
+        "layout": layout,
+        "source_file": "canvas_source.png",
+        "output_file": "canvas_output.png",
+        "source_geometry": canvas_mod.LAYOUTS[layout][2],
+        "layout_check": chk,
+    }
+    flag = "cached" if res["cached"] else f"${res['cost_usd']:.4f}"
+    print(f"  {sample_id} [canvas:{layout}] '{instruction[:34]}' -> {flag} "
+          f"{res['meta'].get('latency_s')}s  layout {chk['panels_matched']}/{chk['n_panels']}")
+    return False
 
 
 def run(args) -> None:
@@ -138,7 +216,8 @@ def run(args) -> None:
     tpl_name, tpl_text = prompts.resolve_template(args.prompt_template)
 
     # --- spend projection, before anything is called ------------------------ #
-    n_calls = count_calls(sit_dir, situations, cameras, args.conditions, args.noop)
+    n_calls = count_calls(sit_dir, situations, cameras, args.conditions, args.noop,
+                          args.strategy)
     per_call = backend.estimate_cost()
     projected = n_calls * per_call
     paid = is_paid_backend(args.backend)
@@ -181,6 +260,20 @@ def run(args) -> None:
                     "prompt_template": None if is_noop else tpl_name,
                     "cameras": {},
                 }
+
+                if args.strategy == "canvas":
+                    aborted = _run_canvas_sample(
+                        args=args, backend=backend, sdir=sdir, cameras=cameras,
+                        rec=rec, out=out, sample_id=sample_id, prompt_text=prompt_text,
+                        is_noop=is_noop, cache=cache, tracker=tracker,
+                        instruction=instruction)
+                    if rec["cameras"]:
+                        out.mkdir(parents=True, exist_ok=True)
+                        (out / "sample.json").write_text(json.dumps(rec, indent=2))
+                        samples.append(rec)
+                    if aborted:
+                        break
+                    continue
 
                 for cam in cameras:
                     src = sdir / "history" / f"{cam}_0.png"
@@ -250,6 +343,8 @@ def run(args) -> None:
         "horizon": horizon,
         "fps": meta.get("fps"),
         "noop_floor": args.noop,
+        "strategy": args.strategy,
+        "canvas_layout": args.canvas_layout if args.strategy == "canvas" else None,
         "openai": ({"quality": args.openai_quality, "size": args.openai_size}
                    if args.backend == "openai_image" else None),
         "cost": tracker.summary(),
@@ -286,6 +381,12 @@ def parse_args(argv=None):
     p.add_argument("--k", type=int, default=None,
                    help="Future frame index used as the real yardstick "
                         "(default: the situation set's horizon).")
+    p.add_argument("--strategy", default="independent", choices=["independent", "canvas"],
+                   help="independent: one call per camera (the default, what ships). "
+                        "canvas: stitch the three views into one image, edit once, split "
+                        "back — one call per prompt instead of three.")
+    p.add_argument("--canvas-layout", default="grid2x2", choices=list(canvas_mod.LAYOUTS),
+                   help="Composite geometry for --strategy canvas.")
     p.add_argument("--noop", action="store_true",
                    help="Also run condition N (a 'change nothing' edit) to measure the "
                         "model's re-render tax — the analogue of the video models' "

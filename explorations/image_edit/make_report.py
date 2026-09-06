@@ -74,6 +74,32 @@ def cam_row(cams: dict[str, np.ndarray], captions: dict[str, str] | None = None)
     return f'<div class="row">{cells}</div>'
 
 
+def canvas_aside(sample: dict, run_dir: Path) -> tuple[str, str]:
+    """(layout badge, returned-canvas thumbnail) for a canvas sample; ("","") otherwise.
+
+    Only the RETURNED canvas is shown, and small: the sent canvas is a
+    deterministic restitch of the source row already displayed above, and 48
+    sent/returned pairs at full width would double an already large file. The
+    badge is the load-bearing part — B and C are where a composite is most
+    likely to get reflowed.
+    """
+    cv = sample.get("canvas")
+    if not cv:
+        return "", ""
+    chk = cv.get("layout_check") or {}
+    matched, n = chk.get("panels_matched"), chk.get("n_panels")
+    kind = "" if chk.get("preserved") else "bad"
+    bdg = (f' <span class="m {kind}">layout <b>{matched}/{n}</b></span>'
+           if matched is not None else "")
+    thumb = ""
+    img = run_dir / sample["sample_id"] / (cv.get("output_file") or "")
+    if cv.get("output_file") and img.exists():
+        thumb = (f'<div class="cvthumb"><figure><img src="{_b64(img.read_bytes())}">'
+                 f'<figcaption>canvas returned · {html.escape(str(cv.get("layout")))}'
+                 "</figcaption></figure></div>")
+    return bdg, thumb
+
+
 def badge(label: str, value: float, kind: str = "") -> str:
     return f' <span class="m {kind}">{html.escape(label)} <b>{value:.1f}</b></span>'
 
@@ -159,8 +185,10 @@ def build(run_dir: Path, sit_dir: Path) -> tuple[str, dict]:
                 err_html = f'<div class="err">{" · ".join(errs)}</div>' if errs else ""
                 label = ("“change nothing” control prompt" if cond == "N"
                          else f'“{html.escape(s["instruction"])}”')
-                items.append(f'<div class="gen-item"><div class="instr">{label}</div>'
-                             f'{err_html}{body}</div>')
+                cv_badge, cv_thumb = canvas_aside(s, run_dir)
+                items.append(f'<div class="gen-item">'
+                             f'<div class="instr">{label}{cv_badge}</div>'
+                             f'{err_html}{cv_thumb}{body}</div>')
 
             title, cls = COND.get(cond, (cond, "x"))
             blocks.append(f'<div class="cond {cls}"><h4>{html.escape(title)}</h4>{"".join(items)}</div>')
@@ -189,6 +217,22 @@ def build(run_dir: Path, sit_dir: Path) -> tuple[str, dict]:
         rows += (f"<tr><td><b>overall</b></td><td>{len(all_v)}</td>"
                  f"<td><b>{mean(all_v):.1f}</b> ({ratio} of the null)</td></tr>")
 
+    lay = [ (s_.get("canvas") or {}).get("layout_check") for s_ in index["samples"] ]
+    lay = [c for c in lay if c]
+    layout_line = ""
+    if lay:
+        kept = sum(c["preserved"] for c in lay)
+        layout_line = (
+            f'<li><b>layout preserved: {kept}/{len(lay)} items</b> — every panel came back '
+            f'in its own position. Measured by matching each returned panel against every '
+            f'source panel; off-diagonal means the composite was reflowed, which a '
+            f'vs-source number alone cannot distinguish from a large edit.</li>'
+            if kept == len(lay) else
+            f'<li><b>layout preserved: only {kept}/{len(lay)} items</b> — the composite was '
+            f'reflowed on {len(lay) - kept} of them, so those rows\' per-view numbers are '
+            f'comparing mismatched panels and should not be read.</li>'
+        )
+
     floor_line = (
         f'<li><b>no-op floor: {noop:.1f}</b> — how far the image moves when the model is told to '
         f'change nothing. The editor\'s equivalent of a reconstruction floor; treat anything '
@@ -208,6 +252,9 @@ def build(run_dir: Path, sit_dir: Path) -> tuple[str, dict]:
         f"<tr><td>{html.escape(k_)}</td><td>{html.escape(str(v))}</td></tr>"
         for k_, v in {
             "backend": index.get("backend"), "model": index.get("model"),
+            "strategy": (f'canvas ({index.get("canvas_layout")})'
+                         if index.get("strategy") == "canvas" else
+                         index.get("strategy") or "independent"),
             "prompt template": f'{index.get("prompt_template")} ({index.get("prompt_template_id")})',
             "cameras": ", ".join(cams_run), "future frame k": k,
             "openai params": index.get("openai"), "no-op floor run": index.get("noop_floor"),
@@ -248,6 +295,10 @@ def build(run_dir: Path, sit_dir: Path) -> tuple[str, dict]:
   code {{ font-size:12px; background:#8881; padding:0 4px; border-radius:4px; }}
   .m {{ font-size:10px; background:#8881; border-radius:5px; padding:0 4px; font-weight:600; }}
   .m.r {{ background:#1565c022; color:#1565c0; }} .m.d {{ background:#8e24aa22; color:#8e24aa; }}
+  .m.bad {{ background:#c6282822; color:#c62828; }}
+  .cvthumb {{ float:right; margin:0 0 6px 10px; }}
+  .cvthumb img {{ width:180px; border-radius:6px; display:block; }}
+  .cvthumb figcaption {{ font-size:10px; color:#888; text-align:center; }}
 </style></head><body>
   <h1>Hosted image edit — subgoal per situation</h1>
   <p class="dim">{html.escape(str(index.get('backend')))} ·
@@ -281,6 +332,7 @@ def build(run_dir: Path, sit_dir: Path) -> tuple[str, dict]:
       <li><b>Real motion over the horizon: {fmt(real_mag)}</b> — real future vs source. A
           counterfactual subgoal <em>should not</em> match this; it is the scale, not the target.</li>
       {null_line}
+      {layout_line}
     </ul>
     <table><tr><th>condition</th><th>n</th><th>image vs A</th></tr>{rows}</table>
     <p class="dim">There is no action column: an image editor produces no actions, so unlike

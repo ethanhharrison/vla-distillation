@@ -44,6 +44,8 @@ from pipeline.subgoal_image.backends import build_image_backend, is_paid_backend
 from pipeline.subgoal_image.cost import CostTracker  # noqa: E402
 from pipeline.subgoal_image.edit import edit_camera  # noqa: E402
 
+import canvas as canvas_mod  # noqa: E402
+
 
 def rebuild_backend(index: dict, quality: str | None = None):
     """Rebuild the run's backend from its index.json.
@@ -84,8 +86,17 @@ def main(argv=None) -> None:
     _, tpl_text = prompts.resolve_template(index["prompt_template"] or prompts.DEFAULT_TEMPLATE)
     prompt_text = prompts.build_prompt(tpl_text, sample["instruction"])
 
+    # A canvas run's null must re-issue the CANVAS request, not three per-frame
+    # edits: the quantity being controlled for is the variance of the call the run
+    # actually made, and a single-frame null would be a different experiment's
+    # control silently pasted into this one.
+    is_canvas = index.get("strategy") == "canvas"
+    layout = index.get("canvas_layout")
+    if is_canvas:
+        prompt_text = canvas_mod.canvas_prompt(prompt_text)
+
     backend = rebuild_backend(index)
-    n_calls = len(cameras) * args.repeats
+    n_calls = args.repeats if is_canvas else len(cameras) * args.repeats
     if is_paid_backend(index["backend"]):
         projected = n_calls * backend.estimate_cost()
         print(f"resample null: {n_calls} uncached edits, projected <= ${projected:.2f}")
@@ -99,6 +110,36 @@ def main(argv=None) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     per_camera: dict[str, float] = {}
+
+    if is_canvas:
+        srcs = {c: (sdir / "history" / f"{c}_0.png").read_bytes() for c in cameras
+                if (sdir / "history" / f"{c}_0.png").exists()}
+        canvas_bytes, _, _ = canvas_mod.build(layout, srcs)
+        originals = {
+            c: load_rgb(run_dir / sample["sample_id"] / sample["cameras"][c]["image"])
+            for c in cameras
+            if (sample["cameras"].get(c) or {}).get("image")
+        }
+        deltas: dict[str, list[float]] = {}
+        for r in range(args.repeats):
+            res = canvas_mod.edit_canvas(
+                backend_name=index["backend"], backend=backend, layout=layout,
+                prompt=prompt_text, canvas_bytes=canvas_bytes,
+                cache=None, tracker=tracker, use_cache=False,  # never cached — see docstring
+                example_id=f"_resample_null/canvas:{layout}",
+            )
+            if res["error"]:
+                print(f"  ! canvas repeat {r}: {res['error']}")
+                continue
+            (out / f"canvas_r{r}.png").write_bytes(res["image"])
+            panels = canvas_mod.split(layout, load_rgb_bytes(res["image"]))
+            for c, orig in originals.items():
+                deltas.setdefault(c, []).append(diff(orig, panels[c]))
+        for c, vals in deltas.items():
+            per_camera[c] = mean(vals)
+            print(f"  {c}: resample null {per_camera[c]:.1f} over {len(vals)} draw(s)")
+        cameras = []   # skip the per-frame path below
+
     for cam in cameras:
         info = sample["cameras"].get(cam)
         src = sdir / "history" / f"{cam}_0.png"
@@ -131,6 +172,8 @@ def main(argv=None) -> None:
         raise SystemExit("no resample succeeded; index.json left unchanged.")
 
     index["resample_null"] = {
+        "strategy": index.get("strategy", "independent"),
+        "canvas_layout": layout if is_canvas else None,
         "situation": sample["situation_id"],
         "instruction": sample["instruction"],
         "repeats": args.repeats,
