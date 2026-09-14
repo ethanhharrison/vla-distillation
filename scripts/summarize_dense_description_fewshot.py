@@ -1,0 +1,242 @@
+"""Visualize a generate_fewshot.py run: the few-shot examples used as context
+(your hand-written ground truth) alongside the query clip and the model's
+Shared + Per-view answer. The model only ever sees start/end stills (no
+video) - but the query clip's video is also rendered here purely for your
+own viewing, so you can judge the model's answer against the actual motion.
+
+Usage:
+    python scripts/summarize_dense_description_fewshot.py \
+        outputs/dense_description_fewshot_runs/success-00285_ex9_s0150_gemini_20260913-200858.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import html
+import json
+import sys
+import tempfile
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))  # to import the pipeline package
+
+from pipeline.dense_description.generate_fewshot import EXAMPLES_YAML, clip_images, load_labeled_examples
+from pipeline.dense_description.video import render_clip_video
+from pipeline.language_instruction.trajectory import load_trajectory
+
+RUNS_DIR = PROJECT_ROOT / "outputs" / "dense_description_fewshot_runs"
+FEWSHOT_MEDIA_DIR = PROJECT_ROOT / "pipeline" / "dense_description" / "fewshot_media"
+
+SHARED_LABELS = {
+    "gripper": "Gripper",
+    "scene_change": "Scene change",
+    "terminal_gripper_state": "Terminal gripper state",
+}
+
+
+def resolve_run(target: str) -> Path:
+    p = Path(target)
+    if p.is_file():
+        return p
+    matches = sorted(RUNS_DIR.glob(f"*{target}*.json"), key=lambda q: q.stat().st_mtime, reverse=True)
+    if not matches:
+        raise FileNotFoundError(f"No fewshot run found for {target!r} under {RUNS_DIR}")
+    return matches[0]
+
+
+def _img(jpeg: bytes, alt: str) -> str:
+    enc = base64.b64encode(jpeg).decode("ascii")
+    return f'<img src="data:image/jpeg;base64,{enc}" alt="{html.escape(alt)}">'
+
+
+def _frame_rows(images_by_cam_time: dict[str, dict[str, bytes]], cameras: list[str]) -> str:
+    """images_by_cam_time: {"start": {cam: jpeg}, "end": {cam: jpeg}}."""
+    rows = []
+    for label in ("start", "end"):
+        figs = "".join(
+            f'<figure>{_img(images_by_cam_time[label][cam], f"{label}/{cam}")}'
+            f'<figcaption>{html.escape(cam)}</figcaption></figure>'
+            for cam in cameras
+            if cam in images_by_cam_time[label]
+        )
+        rows.append(f'<div class="frame-row"><h5>{label}</h5><div class="frames">{figs}</div></div>')
+    return "".join(rows)
+
+
+def _shared_per_view_block(shared: dict, per_view: dict, cameras: list[str], title: str) -> str:
+    shared_rows = "".join(
+        f'<tr><th>{html.escape(label)}</th><td>{html.escape(str(shared.get(key, "")))}</td></tr>'
+        for key, label in SHARED_LABELS.items()
+    )
+    per_view_rows = "".join(
+        f'<tr><th>{html.escape(cam)}</th><td>{html.escape(str(per_view.get(cam, "")))}</td></tr>'
+        for cam in cameras
+    )
+    return f"""
+    <div class="answer">
+      <h5>{html.escape(title)}</h5>
+      <table class="shared">{shared_rows}</table>
+      <table class="perview">{per_view_rows}</table>
+    </div>
+    """
+
+
+def load_fewshot_media_images(ex_id: str, cameras: list[str]) -> dict[str, dict[str, bytes]]:
+    out: dict[str, dict[str, bytes]] = {"start": {}, "end": {}}
+    for label in ("start", "end"):
+        for cam in cameras:
+            path = FEWSHOT_MEDIA_DIR / f"{ex_id}_{label}_{cam}.jpeg"
+            if path.is_file():
+                out[label][cam] = path.read_bytes()
+    return out
+
+
+def load_query_images(run: dict) -> dict[str, dict[str, bytes]]:
+    cameras = tuple(run["cameras"])
+    trajectory = load_trajectory(Path(run["record"]), cameras, run["example_index"])
+    rotate_180 = frozenset(run.get("rotate_180_cameras", []))
+    flat = clip_images(trajectory, run["start_step"], run["end_step"], cameras, rotate_180)
+    n = len(cameras)
+    return {
+        "start": dict(zip(cameras, flat[:n])),
+        "end": dict(zip(cameras, flat[n : 2 * n])),
+    }
+
+
+def render_query_video(run: dict, fps: float = 15.0) -> bytes:
+    """Render the query clip as a stacked-view mp4, for viewing only - the
+    model itself never sees this, only the start/end stills."""
+    cameras = tuple(run["cameras"])
+    trajectory = load_trajectory(Path(run["record"]), cameras, run["example_index"])
+    rotate_180 = frozenset(run.get("rotate_180_cameras", []))
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "query.mp4"
+        return render_clip_video(
+            trajectory, run["start_step"], run["end_step"], cameras, fps, out_path,
+            rotate_180=rotate_180,
+        )
+
+
+def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path) -> str:
+    run = result["run"]
+    cameras = run["cameras"]
+
+    example_sections = []
+    for ex_id in run["fewshot_example_ids"]:
+        ex = examples_by_id.get(ex_id, {})
+        images = load_fewshot_media_images(ex_id, cameras)
+        example_sections.append(f"""
+        <section class="ex fewshot">
+          <h3>{html.escape(ex_id)} <span class="tag">few-shot example</span>
+            <span class="sub">example {ex.get('example_index')} · steps {ex.get('start_step')}-{ex.get('end_step')}
+            ({ex.get('clip_seconds')}s)</span></h3>
+          <p class="instruction">"{html.escape(str(ex.get('language_instruction', '')))}"</p>
+          <div class="body">
+            <div class="col">{_frame_rows(images, cameras)}</div>
+            <div class="col">{_shared_per_view_block(ex.get('shared') or {}, ex.get('per_view') or {}, cameras, "Hand-written (ground truth)")}</div>
+          </div>
+        </section>
+        """)
+
+    query_images = load_query_images(run)
+    video_b64 = base64.b64encode(render_query_video(run)).decode("ascii")
+    query_section = f"""
+    <section class="ex query">
+      <h3>Query <span class="tag">held out — not in few-shot pool</span>
+        <span class="sub">example {run['example_index']} · steps {run['start_step']}-{run['end_step']}
+        ({run['clip_seconds']:g}s)</span></h3>
+      <p class="instruction">"{html.escape(run['language_instruction'])}"</p>
+      <div class="body">
+        <div class="col">
+          {_frame_rows(query_images, cameras)}
+          <div class="frame-row">
+            <h5>video (viewing only — the model never saw this, only the stills above)</h5>
+            <video controls loop muted playsinline src="data:video/mp4;base64,{video_b64}"></video>
+          </div>
+        </div>
+        <div class="col">{_shared_per_view_block(result['shared'], result['per_view'], cameras, "Model output")}</div>
+      </div>
+    </section>
+    """
+
+    meta_rows = "".join(
+        f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(v))}</td></tr>"
+        for k, v in {
+            "record": run.get("record"),
+            "provider": run.get("provider"),
+            "model": run.get("model"),
+            "cameras (top-to-bottom)": " / ".join(cameras),
+            "rotated 180": ", ".join(run.get("rotate_180_cameras", [])) or "none",
+            "few-shot examples": ", ".join(run["fewshot_example_ids"]),
+        }.items()
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Few-shot dense descriptions</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0 auto;
+         max-width: 1300px; padding: 24px; line-height: 1.45; }}
+  h1 {{ margin-bottom: 2px; }} .subtitle {{ color:#888; margin-top:0; }}
+  .card {{ border:1px solid #8883; border-radius:10px; padding:12px 18px; margin:14px 0; }}
+  table {{ border-collapse:collapse; margin-bottom:10px; width:100%; }}
+  th {{ text-align:left; padding:3px 10px 3px 0; color:#888; vertical-align:top; width:34%; font-weight:600; }}
+  td {{ padding:3px 0; vertical-align:top; }}
+  .ex {{ border-top:2px solid #8884; padding-top:14px; margin-top:30px; border-radius:8px; }}
+  .ex.query {{ background:#8e24aa11; padding:14px; border-top:none; border:2px solid #8e24aa55; }}
+  .ex h3 {{ margin:4px 0; }} .sub {{ color:#888; font-weight:400; font-size:13px; }}
+  .tag {{ font-size:11px; text-transform:uppercase; letter-spacing:.03em; background:#8882;
+         border-radius:5px; padding:2px 7px; margin:0 8px; }}
+  .ex.query .tag {{ background:#8e24aa33; color:#8e24aa; }}
+  .instruction {{ color:#8e24aa; margin:2px 0 12px; }}
+  .body {{ display:grid; grid-template-columns: minmax(260px, 420px) 1fr; gap:20px; align-items:start; }}
+  .frame-row {{ margin-bottom:10px; }} .frame-row h5 {{ margin:0 0 6px; color:#888; font-size:12px;
+    text-transform:uppercase; letter-spacing:.03em; }}
+  .frames {{ display:flex; gap:8px; flex-wrap:wrap; }}
+  .frames figure {{ margin:0; width:120px; }} .frames img {{ width:100%; border-radius:8px; display:block; }}
+  .frames figcaption {{ font-size:10px; color:#888; text-align:center; }}
+  video {{ width:100%; max-width:320px; border-radius:8px; display:block; background:#000; margin-top:4px; }}
+  .answer h5 {{ margin:0 0 8px; color:#888; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }}
+  .answer table.perview {{ margin-top:2px; }}
+  @media (max-width: 800px) {{ .body {{ grid-template-columns: 1fr; }} }}
+</style></head><body>
+  <h1>Few-shot dense descriptions</h1>
+  <p class="subtitle">Hand-written examples teach the model your Shared + Per-view format; the query clip is held out.</p>
+  <div class="card"><h2>Run</h2><table>{meta_rows}</table></div>
+
+  {''.join(example_sections)}
+  {query_section}
+  <footer class="subtitle">Rendered from {html.escape(str(source_path))} on
+    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</footer>
+</body></html>"""  # noqa: DTZ005
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("run", help="Path to a generate_fewshot.py results .json, or a name under outputs/dense_description_fewshot_runs/.")
+    p.add_argument("--output", default=None, help="Output .html (defaults next to the run json).")
+    p.add_argument("--open", action="store_true")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    run_path = resolve_run(args.run)
+    result = json.loads(run_path.read_text())
+
+    examples_by_id = {ex["id"]: ex for ex in load_labeled_examples(EXAMPLES_YAML)}
+
+    out = Path(args.output) if args.output else run_path.with_suffix(".html")
+    out.write_text(render_html(result, examples_by_id, run_path))
+    print(f"Wrote {out}")
+    if args.open:
+        webbrowser.open(out.resolve().as_uri())
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,135 @@
+# Few-shot dense-description examples, hand-written.
+#
+# Schema per entry:
+#   shared.gripper / shared.scene_change / shared.terminal_gripper_state
+#   per_view.<camera_name>  (one line per camera in `cameras`)
+#
+# An entry with empty shared/per_view fields is treated as unlabeled and
+# skipped by generate_fewshot.py's few-shot pool. Regenerate the labeling
+# sheet (scripts/make_fewshot_labeling_sheet.py) if you want to see the clip
+# again before writing/editing an entry.
+
+- id: ex01
+  record: datasets/droid/success/success-00285.tfrecord
+  example_index: 1
+  start_step: 60
+  end_step: 89
+  clip_seconds: 2.0
+  cameras: [shoulder_image_1, shoulder_image_2, wrist_image]
+  language_instruction: Remove the fork from underneath the table
+  shared:
+    gripper: >-
+      closed on the handle of the metal silverware and the white plastic spoon
+      initially, then the metal silverware slips out of the gripper, and the
+      gripper closes just on the white plastic spoon. The gripper carries the
+      white plastic spoon across the counter away from the blue cloth, toward
+      the right where an orange snack bag and a silver metal fork lie, leaving
+      the metal silverware behind. The white plastic spoon is not released.
+    scene_change: >-
+      the white plastic spoon leaves its resting spot beside the blue cloth
+      and travels with the gripper. The metal silverware underneath the blue
+      cloth and the blue cloth initially shift slightly due to the white
+      plastic spoon moving.
+    terminal_gripper_state: >-
+      closed, still holding the white plastic spoon, hovering just above the
+      tile near the snack bag.
+  per_view:
+    shoulder_image_1: >-
+      Most objects stay static in the scene, including the cabinet, white
+      microwave and red container on the bottom left, and green and black
+      objects near the bottom. The robot arm on the right of the scene grabs
+      the white plastic spoon and drags it out of the blue cloth to the right
+      of the view, initially slightly moving the blue cloth and the metal
+      silverware underneath. The gripper moves the spoon slightly to the top
+      of the view, closer to the orange snack bag.
+    shoulder_image_2: >-
+      Most objects stay static in the scene, including the cabinet, bananas
+      on the right, orange snack bag on the bottom, black clock on the right,
+      and machine on the right. The robot arm, shown on the left of the view,
+      grabs the white plastic spoon and drags it out of the blue cloth to the
+      left of the view, initially slightly moving the blue cloth and the
+      metal silverware underneath. The gripper moves the spoon slightly to
+      the bottom of the view, closer to the metal fork.
+    wrist_image: >-
+      The view moves with the gripper; the gripper initially grabs both the
+      metal silverware and white plastic spoon below the blue cloth, and then
+      the metal silverware slips out and the gripper closes on just the
+      plastic spoon. The rest of the scene moves to the left in the view,
+      including the blue cloth on the left and the metal fork on the right,
+      as the gripper moves the white plastic spoon closer to the metal fork
+      on the right.
+
+- id: ex02
+  record: datasets/droid/success/success-00285.tfrecord
+  example_index: 4
+  start_step: 90
+  end_step: 119
+  clip_seconds: 2.0
+  cameras: [shoulder_image_1, shoulder_image_2, wrist_image]
+  language_instruction: Move the black pot to the left
+  shared:
+    gripper: >-
+      Initially hovering over the black bar of the pot, then closes on the
+      black bar, grabbing the pot. It then moves the pot slightly to the
+      left, slightly closer to the other stoves, moving nothing else in the
+      process.
+    scene_change: >-
+      Most objects on the stove don't move. The dark green kettle, the knife
+      block, the burner grates and the cables are all in the same place at
+      the end. The only change is that the gripper moved the black pot
+      slightly to the left.
+    terminal_gripper_state: closed on the black bar of the pot.
+  per_view:
+    shoulder_image_1: >-
+      Most objects stay static, including the dark green kettle on the
+      back-left burner, the wooden knife block behind the stove, the empty
+      grates in the foreground and the blue-lit panel at right. After the
+      robot arm grabs the black pot, it moves it slightly down in this view.
+      The arm's forearm rotates and the black end effector translates to the
+      right and downward across the view, ending directly above the black
+      pot; the pot's interior becomes visible as the gripper clears it.
+    shoulder_image_2: >-
+      Most objects stay static, including the laptop, the doorway, the
+      stove's control knobs and the front burner grates. The gripper part of
+      the robot arm, as well as the black pot, are out of the view on the
+      right, but as the gripper moves the black pot, they come slightly more
+      in the view towards the left of this view.
+    wrist_image: >-
+      The view moves with the gripper; the gripper initially hovers over the
+      black bar of the black pot, and then closes on it. The gripper moves
+      the black pot, and everything else in the scene such as the black
+      burner, the white knob of the stove, and the white corner of the stove
+      move slightly to the top right in the view.
+
+- id: ex03
+  record: datasets/droid/success/success-00285.tfrecord
+  example_index: 9
+  start_step: 150
+  end_step: 209
+  clip_seconds: 4.0
+  cameras: [shoulder_image_1, shoulder_image_2, wrist_image]
+  language_instruction: Use on of the forks to stir the contents on the white plate
+  shared: {gripper: "", scene_change: "", terminal_gripper_state: ""}
+  per_view: {shoulder_image_1: "", shoulder_image_2: "", wrist_image: ""}
+
+- id: ex04
+  record: datasets/droid/success/success-00285.tfrecord
+  example_index: 12
+  start_step: 60
+  end_step: 89
+  clip_seconds: 2.0
+  cameras: [shoulder_image_1, shoulder_image_2, wrist_image]
+  language_instruction: Move the white switch on the stove to the right.
+  shared: {gripper: "", scene_change: "", terminal_gripper_state: ""}
+  per_view: {shoulder_image_1: "", shoulder_image_2: "", wrist_image: ""}
+
+- id: ex05
+  record: datasets/droid/success/success-00285.tfrecord
+  example_index: 13
+  start_step: 120
+  end_step: 179
+  clip_seconds: 4.0
+  cameras: [shoulder_image_1, shoulder_image_2, wrist_image]
+  language_instruction: Use the towel to wipe the stove
+  shared: {gripper: "", scene_change: "", terminal_gripper_state: ""}
+  per_view: {shoulder_image_1: "", shoulder_image_2: "", wrist_image: ""}

@@ -51,7 +51,7 @@ def run_window(
     clip_seconds: float,
     *,
     provider: str,
-    cameras: tuple[str, str],
+    cameras: tuple[str, ...],
     example_index: int,
     fps: float,
     ex_dir: Path,
@@ -143,10 +143,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--provider", default="gemini")
     parser.add_argument(
         "--cameras",
-        nargs=2,
-        metavar=("TOP", "BOTTOM"),
+        nargs="+",
+        metavar="CAMERA",
         default=list(DEFAULT_VIDEO_CAMERAS),
-        help="The two cameras used by both modes (frame stills + stacked video).",
+        help="The cameras used by both modes (frame stills + stacked video), top-to-bottom.",
     )
     parser.add_argument("--example-index", type=int, default=0)
     parser.add_argument("--fps", type=float, default=15.0)

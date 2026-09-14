@@ -7,6 +7,7 @@ import io
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 # Local HuggingFace VLM deps (run "uv pip install 'transformers>=4.57' torch torchvision accelerate pillow" to use, or comment out if not using)
 import torch
@@ -29,6 +30,16 @@ DEFAULT_MODELS = {
 
 MODEL_REGISTRY: dict[str, type[VLM]] = {}
 
+
+@dataclass
+class ChatTurn:
+    """One turn of a multi-turn (few-shot) conversation."""
+
+    role: str  # "user" or "model"
+    text: str = ""
+    images: list[bytes] = field(default_factory=list)
+
+
 class VLM(ABC):
     """Common interface for a vision-language model backend."""
 
@@ -42,6 +53,9 @@ class VLM(ABC):
 
     def generate_video(self, prompt: str, video: bytes, mime_type: str = "video/mp4") -> str:
         raise NotImplementedError(f"{type(self).__name__} does not support video input")
+
+    def generate_chat(self, turns: list[ChatTurn]) -> str:
+        raise NotImplementedError(f"{type(self).__name__} does not support multi-turn chat")
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(model={self.model!r})"
@@ -158,6 +172,27 @@ class GeminiVLM(VLM):
         )
         return response.text or ""
 
+    def generate_chat(self, turns: list[ChatTurn]) -> str:
+        contents = []
+        for turn in turns:
+            parts: list = []
+            if turn.text:
+                parts.append(types.Part.from_text(text=turn.text))
+            for image in turn.images:
+                parts.append(types.Part.from_bytes(data=image, mime_type="image/jpeg"))
+            contents.append(types.Content(role=turn.role, parts=parts))
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=contents,
+            **self.extra,
+        )
+        meta = response.usage_metadata
+        self.usage.add(
+            input_tokens=meta.prompt_token_count if meta else 0,
+            output_tokens=meta.candidates_token_count if meta else 0,
+        )
+        return response.text or ""
+
 @register_vlm("hf")
 class HuggingFaceVLM(VLM):
     """Local image-text-to-text backend running downloaded weights via `transformers`."""
@@ -212,3 +247,16 @@ class DummyVLM(VLM):
     def generate_video(self, prompt: str, video: bytes, mime_type: str = "video/mp4") -> str:
         self.usage.add()
         return "The arm reaches toward the object, closes the gripper around it, and lifts it clear of the surface."
+
+    def generate_chat(self, turns: list[ChatTurn]) -> str:
+        self.usage.add()
+        return (
+            "Shared:\n"
+            "Gripper: dummy gripper trajectory across the clip.\n"
+            "Scene change: dummy scene-level change.\n"
+            "Terminal gripper state: dummy terminal state.\n\n"
+            "Per-view:\n"
+            "shoulder_image_1: dummy view 1 description.\n"
+            "shoulder_image_2: dummy view 2 description.\n"
+            "wrist_image: dummy wrist view description."
+        )

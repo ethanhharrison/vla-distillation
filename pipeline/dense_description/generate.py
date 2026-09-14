@@ -29,6 +29,7 @@ from pipeline.language_instruction.trajectory import (
 )
 from pipeline.language_instruction.vlm import VLM, available_providers, build_vlm
 
+from .imaging import DEFAULT_ROTATE_180_CAMERAS, maybe_rotate
 from .prompts import DENSE_DESCRIPTION_PROMPT, build_dense_prompt, parse_description
 
 try:
@@ -158,17 +159,22 @@ def ordered_clip_images(
     start_step: int,
     end_step: int,
     cameras: tuple[str, ...],
+    rotate_180: frozenset[str] = DEFAULT_ROTATE_180_CAMERAS,
 ) -> list[bytes]:
-    """Start-frame cameras first, then end-frame cameras (same order)."""
+    """Start-frame cameras first, then end-frame cameras (same order).
+
+    Cameras named in `rotate_180` are rotated 180 degrees (see imaging.py) so
+    the wrist view's framing agrees with the others.
+    """
     start = trajectory.frame(start_step, cameras)
     end = trajectory.frame(end_step, cameras)
     images: list[bytes] = []
     for cam in cameras:
         if cam in start:
-            images.append(start[cam])
+            images.append(maybe_rotate(start[cam], cam, rotate_180))
     for cam in cameras:
         if cam in end:
-            images.append(end[cam])
+            images.append(maybe_rotate(end[cam], cam, rotate_180))
     return images
 
 
@@ -186,18 +192,20 @@ def save_clip_frames(
     end_step: int,
     cameras: tuple[str, ...],
     image_dir: Path,
+    rotate_180: frozenset[str] = DEFAULT_ROTATE_180_CAMERAS,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Save start/end JPEGs for a clip; return ({cam: path}, {cam: path})."""
+    """Save start/end JPEGs for a clip (as sent to the VLM, rotation included);
+    return ({cam: path}, {cam: path})."""
     image_dir.mkdir(parents=True, exist_ok=True)
     start_paths: dict[str, str] = {}
     end_paths: dict[str, str] = {}
     for cam, jpeg in trajectory.frame(start_step, cameras).items():
         path = image_dir / f"clip{clip_index:04d}_start_step{start_step:04d}_{cam}.jpeg"
-        path.write_bytes(jpeg)
+        path.write_bytes(maybe_rotate(jpeg, cam, rotate_180))
         start_paths[cam] = str(path)
     for cam, jpeg in trajectory.frame(end_step, cameras).items():
         path = image_dir / f"clip{clip_index:04d}_end_step{end_step:04d}_{cam}.jpeg"
-        path.write_bytes(jpeg)
+        path.write_bytes(maybe_rotate(jpeg, cam, rotate_180))
         end_paths[cam] = str(path)
     return start_paths, end_paths
 

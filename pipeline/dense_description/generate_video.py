@@ -36,12 +36,13 @@ from .generate import (
     resolve_language_instruction,
 )
 from .prompts import DENSE_VIDEO_PROMPT, build_dense_video_prompt, parse_description
+from .imaging import DEFAULT_ROTATE_180_CAMERAS
 from .video import render_clip_video
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "dense_description_video"
 
-DEFAULT_VIDEO_CAMERAS: tuple[str, str] = ("shoulder_image_1", "wrist_image")
+DEFAULT_VIDEO_CAMERAS: tuple[str, ...] = ("shoulder_image_1", "shoulder_image_2", "wrist_image")
 DEFAULT_SAVE_VIDEOS = 2
 
 
@@ -50,7 +51,8 @@ class VideoDenseConfig:
     record_path: Path
     provider: str = "gemini"
     model: str | None = None
-    video_cameras: tuple[str, str] = DEFAULT_VIDEO_CAMERAS
+    video_cameras: tuple[str, ...] = DEFAULT_VIDEO_CAMERAS
+    rotate_180_cameras: frozenset[str] = DEFAULT_ROTATE_180_CAMERAS
     example_index: int = 0
     clip_seconds: float = DEFAULT_CLIP_SECONDS
     fps: float = DROID_FPS
@@ -126,7 +128,8 @@ def generate_dense_video_descriptions(
             else Path(tempfile.mkstemp(suffix=".mp4")[1])
         )
         video_bytes = render_clip_video(
-            trajectory, start_step, end_step, config.video_cameras, config.fps, out_path
+            trajectory, start_step, end_step, config.video_cameras, config.fps, out_path,
+            rotate_180=config.rotate_180_cameras,
         )
         if not keep_video:
             out_path.unlink(missing_ok=True)
@@ -184,6 +187,7 @@ def write_results(result: VideoDenseResult, vlm: VLM, run_dir: Path) -> Path:
             "provider": config.provider,
             "model": vlm.model,
             "video_cameras": list(config.video_cameras),
+            "rotate_180_cameras": sorted(config.rotate_180_cameras),
             "clip_seconds": config.clip_seconds,
             "fps": config.fps,
             "clip_frames": config.clip_frames,
@@ -226,10 +230,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--video-cameras",
-        nargs=2,
-        metavar=("TOP", "BOTTOM"),
+        nargs="+",
+        metavar="CAMERA",
         default=None,
-        help=f"Two cameras to stack (top, bottom). Default: {' '.join(DEFAULT_VIDEO_CAMERAS)}.",
+        help=f"Cameras to stack top-to-bottom, in order. Default: {' '.join(DEFAULT_VIDEO_CAMERAS)}.",
+    )
+    parser.add_argument(
+        "--rotate-180",
+        nargs="*",
+        metavar="CAMERA",
+        default=None,
+        help="Cameras to rotate 180 degrees before stacking. "
+        f"Default: {' '.join(DEFAULT_ROTATE_180_CAMERAS)}.",
     )
     parser.add_argument(
         "--example-index",
@@ -291,6 +303,7 @@ def build_config_from_args(args: argparse.Namespace) -> VideoDenseConfig:
         provider=args.provider,
         model=args.model,
         video_cameras=tuple(args.video_cameras) if args.video_cameras else DEFAULT_VIDEO_CAMERAS,
+        rotate_180_cameras=frozenset(args.rotate_180) if args.rotate_180 is not None else DEFAULT_ROTATE_180_CAMERAS,
         example_index=args.example_index,
         clip_seconds=args.clip_seconds,
         fps=args.fps,
@@ -311,7 +324,8 @@ def main(argv: list[str] | None = None) -> None:
     print(
         f"Generating video dense descriptions with {vlm} "
         f"(clips of {config.clip_seconds:g}s ≈ {config.clip_frames} frames, "
-        f"cameras {config.video_cameras[0]}/{config.video_cameras[1]} stacked) ..."
+        f"cameras {'/'.join(config.video_cameras)} stacked top-to-bottom, "
+        f"rotated 180: {', '.join(config.rotate_180_cameras) or 'none'}) ..."
     )
     result = generate_dense_video_descriptions(config, run_dir, vlm=vlm)
     out_path = write_results(result, vlm, run_dir)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 DENSE_DESCRIPTION_PROMPT = """You are labeling a robot manipulation dataset.
 
 You are shown camera views of a robot arm at TWO moments in time that bound a \
@@ -66,10 +68,10 @@ def build_dense_prompt(
 DENSE_VIDEO_PROMPT = """You are labeling a robot manipulation dataset.
 
 You are shown a single video of a robot arm over a short clip of the \
-trajectory. The frame is split into two stacked views, playing forward \
-together at {fps:g} fps for the whole clip:
-- TOP half: {top_camera}
-- BOTTOM half: {bottom_camera}
+trajectory. The frame is split into {n_cameras} equal horizontal bands, \
+stacked top to bottom, playing forward together at {fps:g} fps for the whole \
+clip:
+{camera_bands}
 
 Clip span: steps {start_step}-{end_step} of {total} (about {clip_seconds:g}s).
 
@@ -89,18 +91,27 @@ objects, directions of motion, and relative positions.
 describing that change in detail (what moved, how it moved, and where it \
 ends relative to the start). Do not summarize several motions in a vague \
 phrase — give each notable change its own clear sentence.
-- If the two views disagree or one occludes the relevant motion, say so \
-rather than guessing.
+- If the views disagree or one occludes the relevant motion, say so rather \
+than guessing.
 - Do NOT invent objects that are not visible in the video.
 - Do NOT merely restate the language instruction; describe the change you see.
 - No preamble like "Here is the description:". No bullet lists.
 """
 
 
+_BAND_NAMES = ("TOP", "MIDDLE", "BOTTOM")
+
+
+def _band_label(index: int, n_cameras: int) -> str:
+    if n_cameras <= len(_BAND_NAMES):
+        return _BAND_NAMES[index] if n_cameras > 1 else "THE"
+    return f"band {index + 1} of {n_cameras}"
+
+
 def build_dense_video_prompt(
     *,
     language_instruction: str,
-    cameras: tuple[str, str],
+    cameras: tuple[str, ...],
     start_step: int,
     end_step: int,
     total: int,
@@ -109,11 +120,13 @@ def build_dense_video_prompt(
     template: str = DENSE_VIDEO_PROMPT,
 ) -> str:
     """Render the dense-description video prompt for one clip."""
-    top_camera, bottom_camera = cameras
+    camera_bands = "\n".join(
+        f"- {_band_label(i, len(cameras))}: {cam}" for i, cam in enumerate(cameras)
+    )
     return template.format(
         language_instruction=language_instruction,
-        top_camera=top_camera,
-        bottom_camera=bottom_camera,
+        n_cameras=len(cameras),
+        camera_bands=camera_bands,
         start_step=start_step,
         end_step=end_step,
         total=total,
@@ -135,3 +148,130 @@ def parse_description(text: str) -> str:
         if cleaned.lower().startswith(prefix.lower()):
             cleaned = cleaned[len(prefix) :].strip()
     return cleaned.strip().strip('"').strip()
+
+
+# --- Few-shot format: a "Shared" summary + a per-camera "Per-view" breakdown,
+# taught to the model via hand-written (images, answer) example turns rather
+# than a single instruction block. See generate_fewshot.py.
+
+FEWSHOT_DENSE_DESCRIPTION_INSTRUCTIONS = """You are labeling a robot manipulation dataset.
+
+For each clip you will be shown the START and END camera frames (start \
+frames first, then end frames, same camera order each time).
+
+Write your answer in exactly this format:
+
+Shared:
+Gripper: <what the gripper does across the whole clip - what it holds, when \
+it opens/closes/slips, its overall trajectory>
+Scene change: <what changes in the scene as a whole, independent of any one \
+camera - what moves, what stays put>
+Terminal gripper state: <the gripper's state at the END frame - open/closed, \
+holding what, roughly where>
+
+Per-view:
+{camera_labels}
+
+Guidelines:
+- Be concrete and visual: name objects, directions, contacts.
+- The per-view lines describe the SAME event but strictly from each camera's \
+own framing - the same motion can look like "moves right" in one view and \
+"moves left" in another. Describe what that view actually shows, don't just \
+restate the shared summary.
+- Do NOT invent objects that are not visible in the images.
+- No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:"."""
+
+
+def fewshot_instructions(cameras: tuple[str, ...]) -> str:
+    """The one-time task/format instructions, sent as the first chat turn."""
+    camera_labels = "\n".join(f"{cam}: <...>" for cam in cameras)
+    return FEWSHOT_DENSE_DESCRIPTION_INSTRUCTIONS.format(camera_labels=camera_labels)
+
+
+def fewshot_clip_header(
+    *,
+    language_instruction: str,
+    start_step: int,
+    end_step: int,
+    total: int,
+    clip_seconds: float,
+) -> str:
+    """The short per-clip context sent alongside a clip's images (example or query)."""
+    return (
+        f'Clip: steps {start_step}-{end_step} of {total} (~{clip_seconds:g}s). '
+        f'Instruction: "{language_instruction}".'
+    )
+
+
+def format_fewshot_answer(shared: dict, per_view: dict, cameras: tuple[str, ...]) -> str:
+    """Render hand-written (or parsed) shared/per_view fields as the exact
+    answer text the model is taught to produce."""
+    per_view_lines = "\n".join(f"{cam}: {str(per_view.get(cam, '')).strip()}" for cam in cameras)
+    return (
+        "Shared:\n"
+        f"Gripper: {str(shared.get('gripper', '')).strip()}\n"
+        f"Scene change: {str(shared.get('scene_change', '')).strip()}\n"
+        f"Terminal gripper state: {str(shared.get('terminal_gripper_state', '')).strip()}\n\n"
+        "Per-view:\n"
+        f"{per_view_lines}"
+    )
+
+
+_SHARED_FIELD_RE = re.compile(r"^(Gripper|Scene change|Terminal gripper state):\s*(.*)$", re.IGNORECASE)
+_SHARED_KEY_MAP = {
+    "gripper": "gripper",
+    "scene change": "scene_change",
+    "terminal gripper state": "terminal_gripper_state",
+}
+
+
+def parse_fewshot_response(text: str, cameras: tuple[str, ...]) -> dict:
+    """Parse a 'Shared: ...\\n\\nPer-view: ...' response into
+    {"shared": {...}, "per_view": {cam: ...}}."""
+    shared = {"gripper": "", "scene_change": "", "terminal_gripper_state": ""}
+    per_view = {cam: "" for cam in cameras}
+
+    section: str | None = None
+    current_key: str | None = None
+    buf: list[str] = []
+
+    def flush() -> None:
+        if current_key is None:
+            return
+        value = " ".join(buf).strip()
+        if section == "shared" and current_key in shared:
+            shared[current_key] = value
+        elif section == "per_view" and current_key in per_view:
+            per_view[current_key] = value
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower().rstrip(":")
+        if lowered == "shared":
+            flush()
+            section, current_key, buf = "shared", None, []
+            continue
+        if lowered in ("per-view", "per view"):
+            flush()
+            section, current_key, buf = "per_view", None, []
+            continue
+        if section == "shared":
+            match = _SHARED_FIELD_RE.match(line)
+            if match:
+                flush()
+                current_key = _SHARED_KEY_MAP[match.group(1).lower()]
+                buf = [match.group(2)]
+                continue
+        elif section == "per_view":
+            head, sep, rest = line.partition(":")
+            if sep and head.strip() in per_view:
+                flush()
+                current_key = head.strip()
+                buf = [rest.strip()]
+                continue
+        if current_key is not None:
+            buf.append(line)
+    flush()
+    return {"shared": shared, "per_view": per_view}
