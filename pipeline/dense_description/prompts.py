@@ -182,10 +182,96 @@ restate the shared summary.
 - No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:"."""
 
 
-def fewshot_instructions(cameras: tuple[str, ...]) -> str:
+FEWSHOT_TERSE_INSTRUCTIONS = """You are labeling a robot manipulation clip from its START and END camera frames \
+(start frames first, then end frames, same camera order each time).
+
+Answer in exactly this format, nothing else:
+
+Shared:
+Gripper: ...
+Scene change: ...
+Terminal gripper state: ...
+
+Per-view:
+{camera_labels}
+
+Be concrete. Do not invent objects you can't see."""
+
+
+FEWSHOT_MOTION_EMPHASIS_INSTRUCTIONS = """You are labeling a robot manipulation dataset from START and END camera \
+frames per clip (start frames first, then end frames, same camera order \
+each time).
+
+Your job is to describe MOTION and CHANGE, not to list the static scene. \
+Every sentence should describe something that moved, opened, closed, \
+appeared, or disappeared between START and END - never a static fact (e.g. \
+"the counter is white") unless it's needed to say where something ended up \
+relative to it.
+
+Write your answer in exactly this format:
+
+Shared:
+Gripper: <the gripper's trajectory and state changes across the clip>
+Scene change: <what changed in the scene as a whole>
+Terminal gripper state: <state at END - open/closed, holding what, where>
+
+Per-view:
+{camera_labels}
+
+Guidelines:
+- Every per-view line must name at least one concrete motion visible in \
+THAT camera specifically - not a restatement of the shared summary.
+- Do NOT invent objects that are not visible in the images.
+- No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:"."""
+
+
+FEWSHOT_COMPARE_EXPLICIT_INSTRUCTIONS = """You are labeling a robot manipulation dataset. For each clip you will be \
+shown the START and END camera frames (start frames first, then end frames, \
+same camera order each time).
+
+Before answering, mentally compare the START and END frame of each camera \
+one at a time: what is in a different place, a different pose, or a \
+different state? Only once you've done that for every camera, write your \
+answer - grounded in those specific differences - in exactly this format:
+
+Shared:
+Gripper: <what the gripper does across the whole clip - what it holds, when \
+it opens/closes/slips, its overall trajectory>
+Scene change: <what changes in the scene as a whole, independent of any one \
+camera - what moves, what stays put>
+Terminal gripper state: <the gripper's state at the END frame - open/closed, \
+holding what, roughly where>
+
+Per-view:
+{camera_labels}
+
+Guidelines:
+- Be concrete and visual: name objects, directions, contacts.
+- The per-view lines describe the SAME event but strictly from each camera's \
+own framing - the same motion can look like "moves right" in one view and \
+"moves left" in another.
+- Do NOT invent objects that are not visible in the images.
+- No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:". \
+Do not show your comparison step - only the final answer."""
+
+
+FEWSHOT_INSTRUCTION_TEMPLATES: dict[str, str] = {
+    "default": FEWSHOT_DENSE_DESCRIPTION_INSTRUCTIONS,
+    "terse": FEWSHOT_TERSE_INSTRUCTIONS,
+    "motion_emphasis": FEWSHOT_MOTION_EMPHASIS_INSTRUCTIONS,
+    "compare_explicit": FEWSHOT_COMPARE_EXPLICIT_INSTRUCTIONS,
+}
+
+
+def fewshot_instructions(cameras: tuple[str, ...], template_name: str = "default") -> str:
     """The one-time task/format instructions, sent as the first chat turn."""
+    if template_name not in FEWSHOT_INSTRUCTION_TEMPLATES:
+        raise ValueError(
+            f"Unknown fewshot prompt template {template_name!r}. "
+            f"Available: {', '.join(FEWSHOT_INSTRUCTION_TEMPLATES)}"
+        )
     camera_labels = "\n".join(f"{cam}: <...>" for cam in cameras)
-    return FEWSHOT_DENSE_DESCRIPTION_INSTRUCTIONS.format(camera_labels=camera_labels)
+    return FEWSHOT_INSTRUCTION_TEMPLATES[template_name].format(camera_labels=camera_labels)
 
 
 def fewshot_clip_header(
@@ -195,12 +281,13 @@ def fewshot_clip_header(
     end_step: int,
     total: int,
     clip_seconds: float,
+    include_instruction: bool = True,
 ) -> str:
     """The short per-clip context sent alongside a clip's images (example or query)."""
-    return (
-        f'Clip: steps {start_step}-{end_step} of {total} (~{clip_seconds:g}s). '
-        f'Instruction: "{language_instruction}".'
-    )
+    header = f'Clip: steps {start_step}-{end_step} of {total} (~{clip_seconds:g}s).'
+    if include_instruction:
+        header += f' Instruction: "{language_instruction}".'
+    return header
 
 
 def format_fewshot_answer(shared: dict, per_view: dict, cameras: tuple[str, ...]) -> str:

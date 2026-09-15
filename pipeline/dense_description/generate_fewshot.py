@@ -30,8 +30,9 @@ from pipeline.language_instruction.vlm import VLM, ChatTurn, available_providers
 
 from .generate import DEFAULT_CLIP_SECONDS, DROID_FPS
 from .generate_video import DEFAULT_VIDEO_CAMERAS
-from .imaging import DEFAULT_ROTATE_180_CAMERAS, maybe_rotate
+from .imaging import DEFAULT_ROTATE_180_CAMERAS, process_image
 from .prompts import (
+    FEWSHOT_INSTRUCTION_TEMPLATES,
     fewshot_clip_header,
     fewshot_instructions,
     format_fewshot_answer,
@@ -61,19 +62,25 @@ def clip_images(
     end_step: int,
     cameras: tuple[str, ...],
     rotate_180: frozenset[str],
+    contrast_factor: float | None = None,
 ) -> list[bytes]:
-    """Start-frame cameras first, then end-frame cameras (same order), rotated."""
+    """Start-frame cameras first, then end-frame cameras (same order), processed."""
     start = trajectory.frame(start_step, cameras)
     end = trajectory.frame(end_step, cameras)
-    images = [maybe_rotate(start[c], c, rotate_180) for c in cameras if c in start]
-    images += [maybe_rotate(end[c], c, rotate_180) for c in cameras if c in end]
+    images = [process_image(start[c], c, rotate_180, contrast_factor) for c in cameras if c in start]
+    images += [process_image(end[c], c, rotate_180, contrast_factor) for c in cameras if c in end]
     return images
 
 
-def example_turns(ex: dict, cameras: tuple[str, ...], rotate_180: frozenset[str]) -> list[ChatTurn]:
+def example_turns(
+    ex: dict,
+    cameras: tuple[str, ...],
+    rotate_180: frozenset[str],
+    contrast_factor: float | None = None,
+) -> list[ChatTurn]:
     """The (user: images+context, model: answer) turn pair for one labeled example."""
     trajectory = load_trajectory(Path(ex["record"]), cameras, ex["example_index"])
-    images = clip_images(trajectory, ex["start_step"], ex["end_step"], cameras, rotate_180)
+    images = clip_images(trajectory, ex["start_step"], ex["end_step"], cameras, rotate_180, contrast_factor)
     header = fewshot_clip_header(
         language_instruction=ex.get("language_instruction", ""),
         start_step=ex["start_step"],
@@ -95,6 +102,9 @@ class FewshotConfig:
     model: str | None = None
     cameras: tuple[str, ...] = DEFAULT_VIDEO_CAMERAS
     rotate_180_cameras: frozenset[str] = DEFAULT_ROTATE_180_CAMERAS
+    contrast_factor: float | None = None
+    prompt_template: str = "default"
+    show_query_instruction: bool = True
     example_index: int = 0
     start_step: int = 0
     clip_seconds: float = DEFAULT_CLIP_SECONDS
@@ -112,14 +122,18 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
     if not labeled:
         raise ValueError(f"No labeled few-shot examples found in {config.examples_yaml}")
 
-    turns: list[ChatTurn] = [ChatTurn(role="user", text=fewshot_instructions(config.cameras))]
+    turns: list[ChatTurn] = [
+        ChatTurn(role="user", text=fewshot_instructions(config.cameras, config.prompt_template))
+    ]
     for ex in labeled:
-        turns += example_turns(ex, config.cameras, config.rotate_180_cameras)
+        turns += example_turns(ex, config.cameras, config.rotate_180_cameras, config.contrast_factor)
 
     trajectory = load_trajectory(config.record_path, config.cameras, config.example_index)
     clip_frames = int(round(config.clip_seconds * config.fps))
     end_step = min(config.start_step + clip_frames - 1, trajectory.length - 1)
-    images = clip_images(trajectory, config.start_step, end_step, config.cameras, config.rotate_180_cameras)
+    images = clip_images(
+        trajectory, config.start_step, end_step, config.cameras, config.rotate_180_cameras, config.contrast_factor
+    )
     instruction = config.language_instruction or trajectory.metadata.get("language_instruction1", "")
 
     query_header = fewshot_clip_header(
@@ -128,6 +142,7 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
         end_step=end_step,
         total=trajectory.length,
         clip_seconds=config.clip_seconds,
+        include_instruction=config.show_query_instruction,
     ) + " Now write your answer in the format above."
     turns.append(ChatTurn(role="user", text=query_header, images=images))
 
@@ -141,6 +156,9 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
             "model": vlm.model,
             "cameras": list(config.cameras),
             "rotate_180_cameras": sorted(config.rotate_180_cameras),
+            "contrast_factor": config.contrast_factor,
+            "prompt_template": config.prompt_template,
+            "show_query_instruction": config.show_query_instruction,
             "example_index": config.example_index,
             "start_step": config.start_step,
             "end_step": end_step,
@@ -193,6 +211,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clip-seconds", type=float, default=DEFAULT_CLIP_SECONDS)
     parser.add_argument("--fps", type=float, default=DROID_FPS)
     parser.add_argument("--language-instruction", default=None)
+    parser.add_argument(
+        "--contrast", type=float, default=None, dest="contrast_factor",
+        help="Contrast multiplier applied to every image (1.0 = unchanged). Default: off.",
+    )
+    parser.add_argument(
+        "--prompt-template", default="default",
+        help=f"Named instruction variant. Available: {', '.join(FEWSHOT_INSTRUCTION_TEMPLATES)}.",
+    )
+    parser.add_argument(
+        "--hide-query-instruction", action="store_true",
+        help="Don't tell the model the query clip's language instruction (few-shot examples still show theirs).",
+    )
     parser.add_argument("--examples-yaml", default=None, help=f"Default: {EXAMPLES_YAML}")
     parser.add_argument("--output", default=None, help="Output .json path.")
     return parser.parse_args(argv)
@@ -204,6 +234,9 @@ def build_config_from_args(args: argparse.Namespace) -> FewshotConfig:
         provider=args.provider,
         model=args.model,
         cameras=tuple(args.cameras) if args.cameras else DEFAULT_VIDEO_CAMERAS,
+        contrast_factor=args.contrast_factor,
+        prompt_template=args.prompt_template,
+        show_query_instruction=not args.hide_query_instruction,
         example_index=args.example_index,
         start_step=args.start_step,
         clip_seconds=args.clip_seconds,

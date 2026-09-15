@@ -29,7 +29,6 @@ from pipeline.dense_description.video import render_clip_video
 from pipeline.language_instruction.trajectory import load_trajectory
 
 RUNS_DIR = PROJECT_ROOT / "outputs" / "dense_description_fewshot_runs"
-FEWSHOT_MEDIA_DIR = PROJECT_ROOT / "pipeline" / "dense_description" / "fewshot_media"
 
 SHARED_LABELS = {
     "gripper": "Gripper",
@@ -85,21 +84,20 @@ def _shared_per_view_block(shared: dict, per_view: dict, cameras: list[str], tit
     """
 
 
-def load_fewshot_media_images(ex_id: str, cameras: list[str]) -> dict[str, dict[str, bytes]]:
-    out: dict[str, dict[str, bytes]] = {"start": {}, "end": {}}
-    for label in ("start", "end"):
-        for cam in cameras:
-            path = FEWSHOT_MEDIA_DIR / f"{ex_id}_{label}_{cam}.jpeg"
-            if path.is_file():
-                out[label][cam] = path.read_bytes()
-    return out
-
-
-def load_query_images(run: dict) -> dict[str, dict[str, bytes]]:
-    cameras = tuple(run["cameras"])
-    trajectory = load_trajectory(Path(run["record"]), cameras, run["example_index"])
-    rotate_180 = frozenset(run.get("rotate_180_cameras", []))
-    flat = clip_images(trajectory, run["start_step"], run["end_step"], cameras, rotate_180)
+def load_clip_images(
+    record: str,
+    example_index: int,
+    start_step: int,
+    end_step: int,
+    cameras: tuple[str, ...],
+    rotate_180: frozenset[str],
+    contrast_factor: float | None,
+) -> dict[str, dict[str, bytes]]:
+    """Regenerate a clip's start/end stills with the exact same transforms
+    (rotation, contrast) the run actually used, so the viz always matches
+    what the model was shown - regardless of which trial variant this is."""
+    trajectory = load_trajectory(Path(record), cameras, example_index)
+    flat = clip_images(trajectory, start_step, end_step, cameras, rotate_180, contrast_factor)
     n = len(cameras)
     return {
         "start": dict(zip(cameras, flat[:n])),
@@ -124,11 +122,16 @@ def render_query_video(run: dict, fps: float = 15.0) -> bytes:
 def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path) -> str:
     run = result["run"]
     cameras = run["cameras"]
+    rotate_180 = frozenset(run.get("rotate_180_cameras", []))
+    contrast_factor = run.get("contrast_factor")
 
     example_sections = []
     for ex_id in run["fewshot_example_ids"]:
         ex = examples_by_id.get(ex_id, {})
-        images = load_fewshot_media_images(ex_id, cameras)
+        images = load_clip_images(
+            ex["record"], ex["example_index"], ex["start_step"], ex["end_step"],
+            tuple(cameras), rotate_180, contrast_factor,
+        )
         example_sections.append(f"""
         <section class="ex fewshot">
           <h3>{html.escape(ex_id)} <span class="tag">few-shot example</span>
@@ -142,14 +145,21 @@ def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path
         </section>
         """)
 
-    query_images = load_query_images(run)
+    query_images = load_clip_images(
+        run["record"], run["example_index"], run["start_step"], run["end_step"],
+        tuple(cameras), rotate_180, contrast_factor,
+    )
     video_b64 = base64.b64encode(render_query_video(run)).decode("ascii")
+    instruction_note = (
+        "shown to the model" if run.get("show_query_instruction", True)
+        else "NOT shown to the model — for your reference only"
+    )
     query_section = f"""
     <section class="ex query">
       <h3>Query <span class="tag">held out — not in few-shot pool</span>
         <span class="sub">example {run['example_index']} · steps {run['start_step']}-{run['end_step']}
         ({run['clip_seconds']:g}s)</span></h3>
-      <p class="instruction">"{html.escape(run['language_instruction'])}"</p>
+      <p class="instruction">"{html.escape(run['language_instruction'])}" <span class="sub">({instruction_note})</span></p>
       <div class="body">
         <div class="col">
           {_frame_rows(query_images, cameras)}
@@ -171,6 +181,9 @@ def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path
             "model": run.get("model"),
             "cameras (top-to-bottom)": " / ".join(cameras),
             "rotated 180": ", ".join(run.get("rotate_180_cameras", [])) or "none",
+            "contrast factor": contrast_factor if contrast_factor is not None else "off (1.0)",
+            "prompt template": run.get("prompt_template", "default"),
+            "query instruction shown to model": run.get("show_query_instruction", True),
             "few-shot examples": ", ".join(run["fewshot_example_ids"]),
         }.items()
     )
