@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import imageio.v3 as iio
+
 # Local HuggingFace VLM deps (run "uv pip install 'transformers>=4.57' torch torchvision accelerate pillow" to use, or comment out if not using)
 import torch
 from google import genai
@@ -38,6 +40,29 @@ class ChatTurn:
     role: str  # "user" or "model"
     text: str = ""
     images: list[bytes] = field(default_factory=list)
+    video: bytes | None = None  # mp4 bytes; mutually exclusive with `images` in practice
+
+
+def _extract_video_frames(video_bytes: bytes, max_frames: int = 8, quality: int = 90) -> list[bytes]:
+    """Evenly sample up to `max_frames` frames from an mp4 as JPEG bytes.
+
+    Fallback for backends with no native video input (e.g. OpenAI chat
+    completions, which only takes images): a clip becomes an ordered burst
+    of stills instead, per OpenAI's own cookbook workaround.
+    """
+    all_frames = iio.imread(video_bytes, extension=".mp4", index=None)
+    n = len(all_frames)
+    if n <= max_frames:
+        indices = range(n)
+    else:
+        indices = [round(i * (n - 1) / (max_frames - 1)) for i in range(max_frames)]
+    frames: list[bytes] = []
+    for i in indices:
+        with Image.fromarray(all_frames[i]).convert("RGB") as im:
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality)
+            frames.append(buf.getvalue())
+    return frames
 
 
 class VLM(ABC):
@@ -101,6 +126,41 @@ class OpenAIVLM(VLM):
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": content}],
+            **self.extra,
+        )
+        usage = response.usage
+        self.usage.add(
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+        )
+        return response.choices[0].message.content or ""
+
+    def generate_chat(self, turns: list[ChatTurn]) -> str:
+        messages = []
+        for turn in turns:
+            role = "assistant" if turn.role == "model" else "user"
+            content: list[dict] = []
+            if turn.text:
+                content.append({"type": "text", "text": turn.text})
+            if turn.video is not None:
+                # No native video input on this API - approximate with a
+                # sampled, explicitly-ordered burst of frames instead.
+                frames = _extract_video_frames(turn.video)
+                content.append({
+                    "type": "text",
+                    "text": f"(The following {len(frames)} frames are sampled evenly, in time "
+                    "order, from one continuous video clip.)",
+                })
+                for frame in frames:
+                    b64 = base64.b64encode(frame).decode("ascii")
+                    content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            for image in turn.images:
+                b64 = base64.b64encode(image).decode("ascii")
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            messages.append({"role": role, "content": content})
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
             **self.extra,
         )
         usage = response.usage
@@ -178,6 +238,8 @@ class GeminiVLM(VLM):
             parts: list = []
             if turn.text:
                 parts.append(types.Part.from_text(text=turn.text))
+            if turn.video is not None:
+                parts.append(types.Part.from_bytes(data=turn.video, mime_type="video/mp4"))
             for image in turn.images:
                 parts.append(types.Part.from_bytes(data=image, mime_type="image/jpeg"))
             contents.append(types.Content(role=turn.role, parts=parts))

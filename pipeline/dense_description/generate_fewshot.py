@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ load_dotenv()
 
 import yaml
 
+from pipeline.language_instruction.pricing import estimate_cost
 from pipeline.language_instruction.trajectory import Trajectory, load_trajectory
 from pipeline.language_instruction.vlm import VLM, ChatTurn, available_providers, build_vlm
 
@@ -38,6 +40,9 @@ from .prompts import (
     format_fewshot_answer,
     parse_fewshot_response,
 )
+from .video import render_clip_video
+
+INPUT_MODES = ("stills", "video")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_YAML = PROJECT_ROOT / "pipeline" / "dense_description" / "fewshot_examples.yaml"
@@ -72,15 +77,31 @@ def clip_images(
     return images
 
 
+def clip_video(
+    trajectory: Trajectory,
+    start_step: int,
+    end_step: int,
+    cameras: tuple[str, ...],
+    rotate_180: frozenset[str],
+    fps: float,
+) -> bytes:
+    """Render a clip as a stacked-view mp4 (same convention as generate_video.py)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        return render_clip_video(
+            trajectory, start_step, end_step, cameras, fps, Path(tmp) / "clip.mp4", rotate_180=rotate_180
+        )
+
+
 def example_turns(
     ex: dict,
     cameras: tuple[str, ...],
     rotate_180: frozenset[str],
     contrast_factor: float | None = None,
+    input_mode: str = "stills",
+    fps: float = DROID_FPS,
 ) -> list[ChatTurn]:
-    """The (user: images+context, model: answer) turn pair for one labeled example."""
+    """The (user: images/video+context, model: answer) turn pair for one labeled example."""
     trajectory = load_trajectory(Path(ex["record"]), cameras, ex["example_index"])
-    images = clip_images(trajectory, ex["start_step"], ex["end_step"], cameras, rotate_180, contrast_factor)
     header = fewshot_clip_header(
         language_instruction=ex.get("language_instruction", ""),
         start_step=ex["start_step"],
@@ -89,10 +110,13 @@ def example_turns(
         clip_seconds=ex["clip_seconds"],
     )
     answer = format_fewshot_answer(ex.get("shared") or {}, ex.get("per_view") or {}, cameras)
-    return [
-        ChatTurn(role="user", text=header, images=images),
-        ChatTurn(role="model", text=answer),
-    ]
+    if input_mode == "video":
+        video = clip_video(trajectory, ex["start_step"], ex["end_step"], cameras, rotate_180, fps)
+        user_turn = ChatTurn(role="user", text=header, video=video)
+    else:
+        images = clip_images(trajectory, ex["start_step"], ex["end_step"], cameras, rotate_180, contrast_factor)
+        user_turn = ChatTurn(role="user", text=header, images=images)
+    return [user_turn, ChatTurn(role="model", text=answer)]
 
 
 @dataclass
@@ -105,6 +129,8 @@ class FewshotConfig:
     contrast_factor: float | None = None
     prompt_template: str = "default"
     show_query_instruction: bool = True
+    input_mode: str = "stills"
+    reasoning_effort: str | None = None
     example_index: int = 0
     start_step: int = 0
     clip_seconds: float = DEFAULT_CLIP_SECONDS
@@ -114,9 +140,19 @@ class FewshotConfig:
     output_dir: Path | None = None
 
 
+def build_vlm_for_config(config: FewshotConfig) -> VLM:
+    """build_vlm, threading `reasoning_effort` through only for providers that accept it."""
+    extra = {}
+    if config.reasoning_effort is not None and config.provider == "openai":
+        extra["reasoning_effort"] = config.reasoning_effort
+    return build_vlm(config.provider, model=config.model, **extra)
+
+
 def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
+    if config.input_mode not in INPUT_MODES:
+        raise ValueError(f"Unknown input_mode {config.input_mode!r}. Available: {', '.join(INPUT_MODES)}")
     if vlm is None:
-        vlm = build_vlm(config.provider, model=config.model)
+        vlm = build_vlm_for_config(config)
 
     labeled = load_labeled_examples(config.examples_yaml)
     if not labeled:
@@ -126,14 +162,14 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
         ChatTurn(role="user", text=fewshot_instructions(config.cameras, config.prompt_template))
     ]
     for ex in labeled:
-        turns += example_turns(ex, config.cameras, config.rotate_180_cameras, config.contrast_factor)
+        turns += example_turns(
+            ex, config.cameras, config.rotate_180_cameras, config.contrast_factor,
+            input_mode=config.input_mode, fps=config.fps,
+        )
 
     trajectory = load_trajectory(config.record_path, config.cameras, config.example_index)
     clip_frames = int(round(config.clip_seconds * config.fps))
     end_step = min(config.start_step + clip_frames - 1, trajectory.length - 1)
-    images = clip_images(
-        trajectory, config.start_step, end_step, config.cameras, config.rotate_180_cameras, config.contrast_factor
-    )
     instruction = config.language_instruction or trajectory.metadata.get("language_instruction1", "")
 
     query_header = fewshot_clip_header(
@@ -144,14 +180,29 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
         clip_seconds=config.clip_seconds,
         include_instruction=config.show_query_instruction,
     ) + " Now write your answer in the format above."
-    turns.append(ChatTurn(role="user", text=query_header, images=images))
+    if config.input_mode == "video":
+        video = clip_video(trajectory, config.start_step, end_step, config.cameras, config.rotate_180_cameras, config.fps)
+        turns.append(ChatTurn(role="user", text=query_header, video=video))
+    else:
+        images = clip_images(
+            trajectory, config.start_step, end_step, config.cameras, config.rotate_180_cameras, config.contrast_factor
+        )
+        turns.append(ChatTurn(role="user", text=query_header, images=images))
 
     raw = vlm.generate_chat(turns)
     parsed = parse_fewshot_response(raw, config.cameras)
+    cost = estimate_cost(vlm.model, vlm.usage)
 
     return {
         "run": {
             "record": str(config.record_path),
+            "cost": {
+                "input_tokens": cost.usage.input_tokens,
+                "output_tokens": cost.usage.output_tokens,
+                "input_cost_usd": cost.input_cost,
+                "output_cost_usd": cost.output_cost,
+                "total_cost_usd": cost.total,
+            },
             "provider": config.provider,
             "model": vlm.model,
             "cameras": list(config.cameras),
@@ -159,6 +210,8 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
             "contrast_factor": config.contrast_factor,
             "prompt_template": config.prompt_template,
             "show_query_instruction": config.show_query_instruction,
+            "input_mode": config.input_mode,
+            "reasoning_effort": config.reasoning_effort,
             "example_index": config.example_index,
             "start_step": config.start_step,
             "end_step": end_step,
@@ -193,6 +246,9 @@ def print_result(result: dict) -> None:
     print("\nPer-view:")
     for cam in run["cameras"]:
         print(f"  {cam}: {result['per_view'].get(cam, '')}")
+    cost = run.get("cost", {})
+    total = cost.get("total_cost_usd")
+    print(f"\nCost: ${total:.4f}" if total is not None else "\nCost: unknown (unpriced model)")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -223,6 +279,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--hide-query-instruction", action="store_true",
         help="Don't tell the model the query clip's language instruction (few-shot examples still show theirs).",
     )
+    parser.add_argument(
+        "--input-mode", default="stills", choices=INPUT_MODES,
+        help="'stills' (default): start/end frames only. 'video': a stacked-view mp4 per clip "
+        "(examples and query) - natively on Gemini, as a sampled frame burst on OpenAI (no native video input there).",
+    )
+    parser.add_argument(
+        "--reasoning-effort", default=None,
+        help="OpenAI reasoning_effort (e.g. low/medium/high/xhigh/max, model-dependent). Ignored for other providers.",
+    )
     parser.add_argument("--examples-yaml", default=None, help=f"Default: {EXAMPLES_YAML}")
     parser.add_argument("--output", default=None, help="Output .json path.")
     return parser.parse_args(argv)
@@ -237,6 +302,8 @@ def build_config_from_args(args: argparse.Namespace) -> FewshotConfig:
         contrast_factor=args.contrast_factor,
         prompt_template=args.prompt_template,
         show_query_instruction=not args.hide_query_instruction,
+        input_mode=args.input_mode,
+        reasoning_effort=args.reasoning_effort,
         example_index=args.example_index,
         start_step=args.start_step,
         clip_seconds=args.clip_seconds,
@@ -250,7 +317,7 @@ def build_config_from_args(args: argparse.Namespace) -> FewshotConfig:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     config = build_config_from_args(args)
-    vlm = build_vlm(config.provider, model=config.model)
+    vlm = build_vlm_for_config(config)
 
     result = generate(config, vlm=vlm)
     print_result(result)
