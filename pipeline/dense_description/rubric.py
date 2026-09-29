@@ -244,3 +244,28 @@ def evidence_from_video(
             buf.getvalue(),
         ))
     return evidence + evidence_from_stills(stills, cameras, "end")
+
+
+def judge_fewshot_result(result: dict, judge_model: str = DEFAULT_JUDGE_MODEL,
+                         judge_effort: str = DEFAULT_JUDGE_EFFORT) -> dict:
+    """Grade a generate_fewshot.generate() result, loading its clip (stills the
+    describer saw + intermediate frames) from the run's own record."""
+    from pathlib import Path
+
+    from pipeline.language_instruction.trajectory import load_trajectory
+    from pipeline.language_instruction.vlm import build_vlm
+
+    from .generate_fewshot import clip_images
+
+    run = result["run"]
+    cameras = run["cameras"]
+    trajectory = load_trajectory(Path(run["record"]), tuple(cameras), run["example_index"])
+    flat = clip_images(trajectory, run["start_step"], run["end_step"], tuple(cameras),
+                       frozenset(run["rotate_180_cameras"]), run["contrast_factor"])
+    n = len(cameras)
+    stills = {"start": dict(zip(cameras, flat[:n])), "end": dict(zip(cameras, flat[n:]))}
+    evidence = evidence_from_trajectory(trajectory, run["start_step"], run["end_step"], cameras, stills)
+    judge_vlm = build_vlm(DEFAULT_JUDGE_PROVIDER, model=judge_model, reasoning_effort=judge_effort)
+    verdict = judge_description(judge_vlm, result["raw_response"], run["language_instruction"], evidence)
+    verdict["judge_effort"] = judge_effort
+    return verdict

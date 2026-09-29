@@ -250,6 +250,13 @@ and the task instruction; its verdict is stored as `"judge"` in each result JSON
 and shown in the HTML reports. Re-grade an existing sweep with `--judge-only`;
 skip grading with `--no-judge`.
 
+To iterate on the prompt, score it on the scene-disjoint train/test clip sets
+in `pipeline/dense_description/eval_sets/` (see its README):
+
+```bash
+uv run python scripts/eval_dense_prompt.py --split train --prompt-file my_prompt.txt --name v2
+```
+
 ## Estimating cost
 
 Pass `--estimate-cost` to record an approximate USD cost for the run (works with

@@ -46,15 +46,7 @@ from pipeline.dense_description.generate_fewshot import (
     generate,
     load_labeled_examples,
 )
-from pipeline.dense_description.rubric import (
-    DEFAULT_JUDGE_EFFORT,
-    DEFAULT_JUDGE_MODEL,
-    DEFAULT_JUDGE_PROVIDER,
-    evidence_from_trajectory,
-    judge_description,
-)
-from pipeline.language_instruction.trajectory import load_trajectory
-from pipeline.language_instruction.vlm import build_vlm
+from pipeline.dense_description.rubric import DEFAULT_JUDGE_EFFORT, DEFAULT_JUDGE_MODEL, judge_fewshot_result
 
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "dense_description_fewshot_ablations"
 
@@ -164,7 +156,7 @@ def run_one(
     vlm = build_vlm_for_config(config)
     result = generate(config, vlm=vlm)
     if judge:
-        result["judge"] = judge_result(result, *judge)
+        result["judge"] = judge_fewshot_result(result, *judge)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "result.json"
@@ -182,23 +174,6 @@ def run_one(
         "gripper_preview": result["shared"].get("gripper", "")[:140],
         "cost": result["run"].get("cost", {}),
     }
-
-
-def judge_result(result: dict, judge_model: str, judge_effort: str) -> dict:
-    """Grade a generate() result against the correctness rubric; the judge
-    also sees intermediate frames and the (possibly hidden) instruction."""
-    run = result["run"]
-    cameras = run["cameras"]
-    stills = viz.load_clip_images(
-        run["record"], run["example_index"], run["start_step"], run["end_step"],
-        tuple(cameras), frozenset(run["rotate_180_cameras"]), run["contrast_factor"],
-    )
-    trajectory = load_trajectory(Path(run["record"]), tuple(cameras), run["example_index"])
-    evidence = evidence_from_trajectory(trajectory, run["start_step"], run["end_step"], cameras, stills)
-    judge_vlm = build_vlm(DEFAULT_JUDGE_PROVIDER, model=judge_model, reasoning_effort=judge_effort)
-    verdict = judge_description(judge_vlm, result["raw_response"], run["language_instruction"], evidence)
-    verdict["judge_effort"] = judge_effort
-    return verdict
 
 
 def write_index(batch_dir: Path, record_path: Path, query_labels: list[str], entries: list[dict]) -> Path:
