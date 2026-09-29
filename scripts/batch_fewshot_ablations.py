@@ -201,9 +201,10 @@ def judge_result(result: dict, judge_model: str, judge_effort: str) -> dict:
     return verdict
 
 
-def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list[dict]) -> Path:
-    query_labels = [q[0] for q in queries]
-    rows_by_trial: dict[str, list[dict]] = {}
+def write_index(batch_dir: Path, record_path: Path, query_labels: list[str], entries: list[dict]) -> Path:
+    rows_by_trial: dict[str, dict[str, dict]] = {}
+    total_cost = 0.0
+    total_known = True
     for e in entries:
         rows_by_trial.setdefault(e["trial"], {})[e["query_label"]] = e
         cost = (e.get("cost") or {}).get("total_cost_usd")
@@ -213,15 +214,26 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
             total_cost += cost
 
     sections = []
-    for trial_name, rows in rows_by_trial.items():
-        cells = "".join(
-            f'<td><a href="{html.escape(r["dir"])}/report.html">{html.escape(r["dir"])}</a>'
-            f'<div class="preview">{html.escape(r["gripper_preview"])}…</div>'
-            + (f'<div class="verdict {"ok" if r["verdict"] == "PASS" else "bad"}">{html.escape(r["verdict"])}</div>'
-               if r.get("verdict") else "")
-            + "</td>"
-            for r in rows
-        )
+    for trial_name in TRIALS:
+        rows = rows_by_trial.get(trial_name)
+        if not rows:
+            continue
+        row_cost = sum((r.get("cost") or {}).get("total_cost_usd") or 0.0 for r in rows.values())
+        cells = []
+        for label in query_labels:
+            r = rows.get(label)
+            if r is None:
+                cells.append("<td class='skipped'>—</td>")
+            else:
+                cost = (r.get("cost") or {}).get("total_cost_usd")
+                cost_str = f"${cost:.4f}" if cost is not None else "unknown"
+                cells.append(
+                    f'<td><a href="{html.escape(r["dir"])}/report.html">{html.escape(r["dir"])}</a>'
+                    f'<div class="preview">{html.escape(r["gripper_preview"])}…</div>'
+                    + (f'<div class="verdict {"ok" if r["verdict"] == "PASS" else "bad"}">{html.escape(r["verdict"])}</div>'
+                       if r.get("verdict") else "")
+                    + f'<div class="cost">{cost_str}</div></td>'
+                )
         sections.append(f"""
         <tr>
           <th>{html.escape(trial_name)}<div class="blurb">{html.escape(TRIAL_BLURBS.get(trial_name, ''))}</div>
@@ -246,6 +258,7 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
   td.skipped {{ color: #888; text-align: center; }}
   .blurb {{ font-weight: 400; font-size: 12px; color: #888; margin-top: 4px; }}
   .preview {{ font-size: 12px; color: #888; margin-top: 4px; }}
+  .cost {{ font-size: 12px; color: #2e7d32; margin-top: 4px; font-weight: 600; }}
   .verdict {{ font-size: 12px; font-weight: 700; margin-top: 4px; }}
   .verdict.ok {{ color: #2e7d32; }} .verdict.bad {{ color: #c62828; }}
   a {{ font-weight: 600; }}
@@ -284,13 +297,11 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             name = f"{trial_name}_{query_label}"
             print(f"=== {name} ===")
-            entries.append(
-                run_one(
-                    record_path, args.provider, trial_name, overrides,
-                    example_index, start_step, clip_seconds,
-                    batch_dir / name, examples_by_id,
-                    None if args.no_judge else (args.judge_model, args.judge_effort),
-                )
+            entry = run_one(
+                record_path, args.provider, args.model, args.reasoning_effort,
+                trial_name, overrides, example_index, start_step, clip_seconds,
+                batch_dir / name, examples_by_id,
+                None if args.no_judge else (args.judge_model, args.judge_effort),
             )
             entry["query_label"] = query_label
             entries.append(entry)

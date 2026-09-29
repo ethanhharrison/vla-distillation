@@ -161,6 +161,14 @@ def render_clip_video_bytes(
         )
 
 
+def _video_block(video_bytes: bytes, caption: str) -> str:
+    b64 = base64.b64encode(video_bytes).decode("ascii")
+    return (
+        f'<div class="frame-row"><h5>{html.escape(caption)}</h5>'
+        f'<video controls loop muted playsinline src="data:video/mp4;base64,{b64}"></video></div>'
+    )
+
+
 def render_html(
     result: dict,
     examples_by_id: dict[str, dict],
@@ -206,14 +214,25 @@ def render_html(
         </section>
         """)
 
-    if query_images is None:
-        query_images = load_clip_images(
-            run["record"], run["example_index"], run["start_step"], run["end_step"],
-            tuple(cameras), rotate_180, contrast_factor,
-        )
     if query_video is None:
-        query_video = render_query_video(run)
-    video_b64 = base64.b64encode(query_video).decode("ascii")
+        query_video = render_clip_video_bytes(
+            run["record"], run["example_index"], run["start_step"], run["end_step"], tuple(cameras), rotate_180,
+        )
+    if is_video:
+        query_caption = "video sent to the model" + (
+            " (as a sampled frame burst — this API has no native video input)" if provider == "openai"
+            else " (native video input)"
+        )
+        query_media = _video_block(query_video, query_caption)
+    else:
+        if query_images is None:
+            query_images = load_clip_images(
+                run["record"], run["example_index"], run["start_step"], run["end_step"],
+                tuple(cameras), rotate_180, contrast_factor,
+            )
+        query_media = _frame_rows(query_images, cameras) + _video_block(
+            query_video, "video (viewing only — the model saw only the stills above)"
+        )
     instruction_note = (
         "shown to the model" if run.get("show_query_instruction", True)
         else "NOT shown to the model — for your reference only"
@@ -225,13 +244,7 @@ def render_html(
         ({run['clip_seconds']:g}s)</span></h3>
       <p class="instruction">"{html.escape(run['language_instruction'])}" <span class="sub">({instruction_note})</span></p>
       <div class="body">
-        <div class="col">
-          {_frame_rows(query_images, cameras)}
-          <div class="frame-row">
-            <h5>video (viewing only — the model never saw this, only the stills above)</h5>
-            <video controls loop muted playsinline src="data:video/mp4;base64,{video_b64}"></video>
-          </div>
-        </div>
+        <div class="col">{query_media}</div>
         <div class="col">{_shared_per_view_block(result['shared'], result['per_view'], cameras, "Model output")}
           {_judge_block(result.get('judge'))}</div>
       </div>
@@ -252,6 +265,7 @@ def render_html(
             "prompt template": run.get("prompt_template", "default"),
             "query instruction shown to model": run.get("show_query_instruction", True),
             "few-shot examples": ", ".join(run["fewshot_example_ids"]),
+            **({"cost": _fmt_cost(run["cost"])} if "cost" in run else {}),
             # Only present for runs from batch_model_effort_sweep.py.
             **{k: run[k] for k in ("reasoning_effort", "tokens", "latency_s", "cost_usd") if k in run},
         }.items()

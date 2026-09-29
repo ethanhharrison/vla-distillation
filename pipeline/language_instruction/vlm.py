@@ -141,7 +141,18 @@ class OpenAIVLM(VLM):
             content: list[dict] = []
             if turn.text:
                 content.append({"type": "text", "text": turn.text})
-            for image in turn.images:
+            images = list(turn.images)
+            if turn.video is not None:
+                # No native video input on this API - approximate with a
+                # sampled, explicitly-ordered burst of frames instead.
+                frames = _extract_video_frames(turn.video)
+                content.append({
+                    "type": "text",
+                    "text": f"(The following {len(frames)} frames are sampled evenly, in time "
+                    "order, from one continuous video clip.)",
+                })
+                images = frames + images
+            for image in images:
                 b64 = base64.b64encode(image).decode("ascii")
                 content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
             role = "assistant" if turn.role == "model" else turn.role
