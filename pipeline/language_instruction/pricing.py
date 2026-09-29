@@ -14,6 +14,7 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.5, 10.0),
     "gpt-4o-mini": (0.15, 0.6),
     # Google Gemini
+    "gemini-robotics-er-2-preview": (2.0, 10.0),
     "gemini-3.6-flash": (0.30, 2.50),
     "gemini-3.5-flash-lite": (0.10, 0.40),
     "gemini-3.1-flash-lite": (0.10, 0.40),

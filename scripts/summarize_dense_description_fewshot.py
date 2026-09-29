@@ -37,6 +37,15 @@ SHARED_LABELS = {
 }
 
 
+def _fmt_cost(cost: dict | None) -> str:
+    if not cost or cost.get("total_cost_usd") is None:
+        return "unknown (unpriced model)"
+    return (
+        f"${cost['total_cost_usd']:.4f} "
+        f"({cost['input_tokens']} in / {cost['output_tokens']} out tokens)"
+    )
+
+
 def resolve_run(target: str) -> Path:
     p = Path(target)
     if p.is_file():
@@ -134,17 +143,21 @@ def load_clip_images(
     }
 
 
-def render_query_video(run: dict, fps: float = 15.0) -> bytes:
-    """Render the query clip as a stacked-view mp4, for viewing only - the
-    model itself never sees this, only the start/end stills."""
-    cameras = tuple(run["cameras"])
-    trajectory = load_trajectory(Path(run["record"]), cameras, run["example_index"])
-    rotate_180 = frozenset(run.get("rotate_180_cameras", []))
+def render_clip_video_bytes(
+    record: str,
+    example_index: int,
+    start_step: int,
+    end_step: int,
+    cameras: tuple[str, ...],
+    rotate_180: frozenset[str],
+    fps: float = 15.0,
+) -> bytes:
+    """Render any clip (example or query) as a stacked-view mp4."""
+    trajectory = load_trajectory(Path(record), cameras, example_index)
     with tempfile.TemporaryDirectory() as tmp:
-        out_path = Path(tmp) / "query.mp4"
+        out_path = Path(tmp) / "clip.mp4"
         return render_clip_video(
-            trajectory, run["start_step"], run["end_step"], cameras, fps, out_path,
-            rotate_180=rotate_180,
+            trajectory, start_step, end_step, cameras, fps, out_path, rotate_180=rotate_180,
         )
 
 
@@ -161,14 +174,25 @@ def render_html(
     cameras = run["cameras"]
     rotate_180 = frozenset(run.get("rotate_180_cameras", []))
     contrast_factor = run.get("contrast_factor")
+    input_mode = run.get("input_mode", "stills")
+    is_video = input_mode == "video"
+    provider = run.get("provider", "")
 
     example_sections = []
     for ex_id in run["fewshot_example_ids"]:
         ex = examples_by_id.get(ex_id, {})
-        images = load_clip_images(
-            ex["record"], ex["example_index"], ex["start_step"], ex["end_step"],
-            tuple(cameras), rotate_180, contrast_factor,
-        )
+        if is_video:
+            video_bytes = render_clip_video_bytes(
+                ex["record"], ex["example_index"], ex["start_step"], ex["end_step"], tuple(cameras), rotate_180,
+            )
+            caption = "video sent to the model" + (" (as a sampled frame burst — see below)" if provider == "openai" else "")
+            media = _video_block(video_bytes, caption)
+        else:
+            images = load_clip_images(
+                ex["record"], ex["example_index"], ex["start_step"], ex["end_step"],
+                tuple(cameras), rotate_180, contrast_factor,
+            )
+            media = _frame_rows(images, cameras)
         example_sections.append(f"""
         <section class="ex fewshot">
           <h3>{html.escape(ex_id)} <span class="tag">few-shot example</span>
@@ -176,7 +200,7 @@ def render_html(
             ({ex.get('clip_seconds')}s)</span></h3>
           <p class="instruction">"{html.escape(str(ex.get('language_instruction', '')))}"</p>
           <div class="body">
-            <div class="col">{_frame_rows(images, cameras)}</div>
+            <div class="col">{media}</div>
             <div class="col">{_shared_per_view_block(ex.get('shared') or {}, ex.get('per_view') or {}, cameras, "Hand-written (ground truth)")}</div>
           </div>
         </section>
@@ -220,6 +244,8 @@ def render_html(
             "record": run.get("record"),
             "provider": run.get("provider"),
             "model": run.get("model"),
+            "reasoning_effort": run.get("reasoning_effort") or "n/a",
+            "input mode": input_mode,
             "cameras (top-to-bottom)": " / ".join(cameras),
             "rotated 180": ", ".join(run.get("rotate_180_cameras", [])) or "none",
             "contrast factor": contrast_factor if contrast_factor is not None else "off (1.0)",

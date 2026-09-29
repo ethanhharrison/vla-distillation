@@ -3,12 +3,17 @@ clips, writing one self-contained batch directory (one subfolder per
 trial x query, each with its own report.html) plus an index linking them.
 
 Named trials (override any via --trials to run a subset):
-  baseline                 - current defaults (instruction shown, no contrast)
+  baseline                 - current defaults (instruction shown, no contrast, stills)
   no_query_instruction     - query's language instruction hidden from the model
   contrast_1.5             - all images contrast-boosted 1.5x before sending
-  prompt_terse             - minimal-instructions prompt variant
-  prompt_motion_emphasis   - instructions that push for motion-only sentences
-  prompt_compare_explicit  - instructions that ask for an explicit start/end compare first
+  prompt_terse             - minimal-instructions prompt variant + hidden instruction
+  prompt_motion_emphasis   - motion-only-sentences prompt variant + hidden instruction
+  prompt_compare_explicit  - explicit start/end compare prompt variant + hidden instruction
+  current_ideal            - hidden instruction + 1.5x contrast (4s query clips only)
+  video                    - stacked-view clip video instead of stills, for
+                             both few-shot examples and the query (native on
+                             Gemini; a sampled frame burst on OpenAI, which
+                             has no native video input)
 
 Each result is graded by a VLM judge against the correctness rubric in
 pipeline/dense_description/rubric.py (pass only if every criterion passes);
@@ -16,8 +21,8 @@ the verdict is saved as "judge" in result.json and shown in the reports.
 
 Usage:
     python scripts/batch_fewshot_ablations.py \
-        datasets/droid/success/success-00285.tfrecord
-    python scripts/batch_fewshot_ablations.py ... --trials baseline,contrast_1.5
+        datasets/droid/success/success-00285.tfrecord \
+        --provider openai --model gpt-6-astra --reasoning-effort xhigh
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ import summarize_dense_description_fewshot as viz
 from pipeline.dense_description.generate_fewshot import (
     EXAMPLES_YAML,
     FewshotConfig,
+    build_vlm_for_config,
     generate,
     load_labeled_examples,
 )
@@ -56,39 +62,62 @@ TRIALS: dict[str, dict] = {
     "baseline": {},
     "no_query_instruction": {"show_query_instruction": False},
     "contrast_1.5": {"contrast_factor": 1.5},
-    "prompt_terse": {"prompt_template": "terse"},
-    "prompt_motion_emphasis": {"prompt_template": "motion_emphasis"},
-    "prompt_compare_explicit": {"prompt_template": "compare_explicit"},
+    "prompt_terse": {"prompt_template": "terse", "show_query_instruction": False},
+    "prompt_motion_emphasis": {"prompt_template": "motion_emphasis", "show_query_instruction": False},
+    "prompt_compare_explicit": {"prompt_template": "compare_explicit", "show_query_instruction": False},
+    "current_ideal": {"show_query_instruction": False, "contrast_factor": 1.5},
+    "video": {"input_mode": "video"},
+}
+
+# Trials restricted to a subset of query labels (default: all queries below).
+TRIAL_QUERY_SUBSET: dict[str, list[str]] = {
+    "current_ideal": ["4s_a", "4s_b"],  # 4 seconds is part of this recipe
 }
 
 TRIAL_BLURBS: dict[str, str] = {
-    "baseline": "current defaults: instruction shown, no contrast boost, default prompt",
+    "baseline": "current defaults: instruction shown, no contrast boost, default prompt, stills",
     "no_query_instruction": "the query clip's language instruction is withheld from the model (few-shot examples still show theirs)",
     "contrast_1.5": "every image (examples + query) gets a 1.5x contrast boost before being sent",
-    "prompt_terse": "same examples, but the task/format instructions are cut to a bare skeleton",
-    "prompt_motion_emphasis": "instructions explicitly forbid static-scene sentences, demand motion in every line",
-    "prompt_compare_explicit": "instructions ask the model to explicitly compare start vs end per camera before answering",
+    "prompt_terse": "task/format instructions cut to a bare skeleton, query instruction hidden",
+    "prompt_motion_emphasis": "instructions forbid static-scene sentences, demand motion in every line; query instruction hidden",
+    "prompt_compare_explicit": "instructions ask for an explicit start/end compare before answering; query instruction hidden",
+    "current_ideal": "combines the best-performing knobs so far: hidden instruction + 1.5x contrast, on 4s clips only",
+    "video": "the clip's own stacked-view video (examples + query) instead of just start/end stills",
 }
+
+# Default query record: droid_100 (public RLDS, genuinely different scenes -
+# different labs/kitchens/objects per episode), not success-00285 (a single
+# lab's tfrecord shard, where every episode is the same physical kitchen).
+DEFAULT_QUERY_RECORD = "datasets/droid/droid_100/1.0.0"
 
 # (query_label, example_index, start_step, clip_seconds)
 DEFAULT_QUERIES: list[tuple[str, int, int, float]] = [
-    ("2s", 12, 60, 2.0),
-    ("4s", 13, 120, 4.0),
+    ("2s_a", 0, 30, 2.0),   # RAIL kitchen - "Put the marker in the pot"
+    ("2s_b", 2, 30, 2.0),   # TRI kitchen - "Put one green sachet in the grey bowl."
+    ("4s_a", 1, 60, 4.0),   # RPL kitchen - "Put the candy bar on the left side of the first shelf"
+    ("4s_b", 6, 60, 4.0),   # IRIS lab - "Take the pen out of the bowl and place it on the table"
 ]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("record", help="Path to a .tfrecord file.")
+    parser.add_argument(
+        "record", nargs="?", default=DEFAULT_QUERY_RECORD,
+        help=f"Path to a .tfrecord file OR an RLDS dataset directory for the query clips "
+        f"(default: {DEFAULT_QUERY_RECORD}). Few-shot examples always load from their own "
+        "record in fewshot_examples.yaml, regardless of this.",
+    )
     parser.add_argument("--provider", default="gemini")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--reasoning-effort", default=None, help="Passed through for providers that support it (e.g. OpenAI).")
     parser.add_argument(
         "--trials", default=None,
         help=f"Comma-separated subset of trial names to run. Default: all ({', '.join(TRIALS)}).",
     )
     parser.add_argument(
         "--queries", default=None,
-        help="Comma-separated EXAMPLE_INDEX:START_STEP:SECONDS specs to use as query clips "
-        "(default: the 2s switch clip and the 4s wipe clip already in fewshot_examples.yaml).",
+        help="Comma-separated LABEL:EXAMPLE_INDEX:START_STEP:SECONDS specs to use as query clips "
+        "(default: two 2s clips and two 4s clips).",
     )
     parser.add_argument("--output", default=None, help="Batch directory (defaults under outputs/dense_description_fewshot_ablations/).")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL,
@@ -103,14 +132,16 @@ def resolve_queries(spec: str | None) -> list[tuple[str, int, int, float]]:
         return DEFAULT_QUERIES
     queries = []
     for chunk in spec.split(","):
-        idx_s, start_s, seconds_s = chunk.split(":")
-        queries.append((f"{seconds_s}s_ex{idx_s}", int(idx_s), int(start_s), float(seconds_s)))
+        label, idx_s, start_s, seconds_s = chunk.split(":")
+        queries.append((label, int(idx_s), int(start_s), float(seconds_s)))
     return queries
 
 
 def run_one(
     record_path: Path,
     provider: str,
+    model: str | None,
+    reasoning_effort: str | None,
     trial_name: str,
     overrides: dict,
     example_index: int,
@@ -123,12 +154,14 @@ def run_one(
     config = FewshotConfig(
         record_path=record_path,
         provider=provider,
+        model=model,
+        reasoning_effort=reasoning_effort,
         example_index=example_index,
         start_step=start_step,
         clip_seconds=clip_seconds,
         **overrides,
     )
-    vlm = build_vlm(config.provider, model=config.model)
+    vlm = build_vlm_for_config(config)
     result = generate(config, vlm=vlm)
     if judge:
         result["judge"] = judge_result(result, *judge)
@@ -144,8 +177,10 @@ def run_one(
         "verdict": None if verdict is None else ("PASS" if verdict["pass"] else "FAIL: " + ", ".join(verdict["failed_criteria"])),
         "dir": out_dir.name,
         "trial": trial_name,
+        "query_label": None,  # filled by caller
         "instruction": result["run"]["language_instruction"],
         "gripper_preview": result["shared"].get("gripper", "")[:140],
+        "cost": result["run"].get("cost", {}),
     }
 
 
@@ -170,7 +205,12 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
     query_labels = [q[0] for q in queries]
     rows_by_trial: dict[str, list[dict]] = {}
     for e in entries:
-        rows_by_trial.setdefault(e["trial"], []).append(e)
+        rows_by_trial.setdefault(e["trial"], {})[e["query_label"]] = e
+        cost = (e.get("cost") or {}).get("total_cost_usd")
+        if cost is None:
+            total_known = False
+        else:
+            total_cost += cost
 
     sections = []
     for trial_name, rows in rows_by_trial.items():
@@ -184,23 +224,26 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
         )
         sections.append(f"""
         <tr>
-          <th>{html.escape(trial_name)}<div class="blurb">{html.escape(TRIAL_BLURBS.get(trial_name, ''))}</div></th>
-          {cells}
+          <th>{html.escape(trial_name)}<div class="blurb">{html.escape(TRIAL_BLURBS.get(trial_name, ''))}</div>
+            <div class="cost">row total: ${row_cost:.4f}</div></th>
+          {''.join(cells)}
         </tr>
         """)
 
     header_cells = "".join(f"<th>{html.escape(q)}</th>" for q in query_labels)
+    total_line = f"${total_cost:.4f}" + ("" if total_known else " (some unknown, excluded)")
     out = batch_dir / "index.html"
     out.write_text(f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Few-shot dense-description ablations</title>
 <style>
   :root {{ color-scheme: light dark; }}
-  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1000px;
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1100px;
          margin: 40px auto; padding: 0 20px; line-height: 1.5; }}
   table {{ border-collapse: collapse; width: 100%; margin-top: 16px; }}
   th, td {{ border: 1px solid #8883; padding: 10px; text-align: left; vertical-align: top; }}
   th {{ background: #8881; width: 220px; }}
+  td.skipped {{ color: #888; text-align: center; }}
   .blurb {{ font-weight: 400; font-size: 12px; color: #888; margin-top: 4px; }}
   .preview {{ font-size: 12px; color: #888; margin-top: 4px; }}
   .verdict {{ font-size: 12px; font-weight: 700; margin-top: 4px; }}
@@ -209,6 +252,7 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
 </style></head><body>
   <h1>Few-shot dense-description ablations</h1>
   <p>{html.escape(str(record_path))}</p>
+  <p class="cost">Total cost: {total_line}</p>
   <table>
     <tr><th>trial</th>{header_cells}</tr>
     {''.join(sections)}
@@ -222,6 +266,7 @@ def main(argv: list[str] | None = None) -> None:
     record_path = Path(args.record)
     trial_names = args.trials.split(",") if args.trials else list(TRIALS)
     queries = resolve_queries(args.queries)
+    query_labels = [q[0] for q in queries]
 
     batch_dir = (
         Path(args.output)
@@ -233,7 +278,10 @@ def main(argv: list[str] | None = None) -> None:
     entries = []
     for trial_name in trial_names:
         overrides = TRIALS[trial_name]
+        allowed_labels = TRIAL_QUERY_SUBSET.get(trial_name)
         for query_label, example_index, start_step, clip_seconds in queries:
+            if allowed_labels is not None and query_label not in allowed_labels:
+                continue
             name = f"{trial_name}_{query_label}"
             print(f"=== {name} ===")
             entries.append(
@@ -244,9 +292,16 @@ def main(argv: list[str] | None = None) -> None:
                     None if args.no_judge else (args.judge_model, args.judge_effort),
                 )
             )
+            entry["query_label"] = query_label
+            entries.append(entry)
 
-    index_path = write_index(batch_dir, record_path, queries, entries)
-    print(f"\nWrote {len(entries)} reports to {batch_dir}")
+    index_path = write_index(batch_dir, record_path, query_labels, entries)
+    costs = [(e.get("cost") or {}).get("total_cost_usd") for e in entries]
+    if all(c is not None for c in costs):
+        print(f"\nTotal cost: ${sum(costs):.4f} across {len(entries)} calls")
+    else:
+        print(f"\nTotal cost: unknown for some calls (unpriced model) across {len(entries)} calls")
+    print(f"Wrote {len(entries)} reports to {batch_dir}")
     print(f"Open {index_path}")
 
 

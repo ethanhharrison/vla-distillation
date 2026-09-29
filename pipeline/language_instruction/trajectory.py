@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,18 @@ from pathlib import Path
 import tensorflow as tf
 
 DEFAULT_CAMERAS = ("shoulder_image_1", "shoulder_image_2", "wrist_image")
+
+# Canonical camera name -> the public droid_100 RLDS build's observation key,
+# so an RLDS episode decodes into the exact same Trajectory shape (and the
+# same camera names) as the partner tfrecord format - every other module
+# (rotation defaults, prompt building, video stacking) needs no changes to
+# work with either source.
+RLDS_CAMERA_MAP = {
+    "shoulder_image_1": "exterior_image_1_left",
+    "shoulder_image_2": "exterior_image_2_left",
+    "wrist_image": "wrist_image_left",
+}
+RLDS_INSTRUCTION_KEYS = ("language_instruction", "language_instruction_2", "language_instruction_3")
 
 @dataclass
 class Trajectory:
@@ -58,11 +71,11 @@ def decode_metadata(features) -> dict:
             metadata[key] = features[key].int64_list.value[0]
     return metadata
 
-def load_trajectories(
+def _load_tfrecord_trajectories(
     record_path: str | Path,
-    cameras: tuple[str, ...] = DEFAULT_CAMERAS,
+    cameras: tuple[str, ...],
 ) -> Iterator[Trajectory]:
-    """Yield one `Trajectory` per example stored in the tfrecord."""
+    """Yield one `Trajectory` per example in a partner-format .tfrecord."""
     raw_dataset = tf.data.TFRecordDataset([str(record_path)])
     for raw_record in raw_dataset:
         example = tf.train.Example()
@@ -82,13 +95,80 @@ def load_trajectories(
             metadata=decode_metadata(features),
         )
 
+
+def _encode_jpeg(arr, quality: int = 95) -> bytes:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def _load_rlds_trajectories(
+    dataset_dir: str | Path,
+    cameras: tuple[str, ...],
+) -> Iterator[Trajectory]:
+    """Yield one `Trajectory` per episode of a TFDS-built RLDS dataset (e.g.
+    the public droid_100 build) - same shape as the tfrecord loader above, so
+    downstream code doesn't care which source a clip came from."""
+    import tensorflow_datasets as tfds
+
+    builder = tfds.builder_from_directory(str(dataset_dir))
+    ds = builder.as_dataset(split="train")
+    for episode in ds:
+        steps = list(episode["steps"])
+        images: dict[str, list[bytes]] = {cam: [] for cam in cameras}
+        for step in steps:
+            obs = step["observation"]
+            for cam in cameras:
+                rlds_key = RLDS_CAMERA_MAP.get(cam, cam)
+                images[cam].append(_encode_jpeg(obs[rlds_key].numpy()))
+
+        instructions: list[str] = []
+        for key in RLDS_INSTRUCTION_KEYS:
+            if steps and key in steps[0]:
+                text = steps[0][key].numpy().decode("utf-8", "replace").strip()
+                if text:
+                    instructions.append(text)
+
+        md = episode.get("episode_metadata", {})
+        file_path = md["file_path"].numpy().decode("utf-8", "replace") if "file_path" in md else ""
+        metadata = {"rel_path": file_path}
+        metadata["episode_id"] = Path(file_path).parent.name if file_path else str(dataset_dir)
+        for i, text in enumerate(instructions[:3], start=1):
+            metadata[f"language_instruction{i}"] = text
+
+        length = min((len(v) for v in images.values()), default=0)
+        yield Trajectory(
+            record_path=str(dataset_dir),
+            length=length,
+            images=images,
+            metadata=metadata,
+        )
+
+
+def load_trajectories(
+    record_path: str | Path,
+    cameras: tuple[str, ...] = DEFAULT_CAMERAS,
+) -> Iterator[Trajectory]:
+    """Yield one `Trajectory` per episode.
+
+    Dispatches on whether `record_path` is a file (a partner-format
+    .tfrecord) or a directory (a TFDS-built RLDS dataset, e.g. droid_100) -
+    every caller can pass either interchangeably.
+    """
+    if Path(record_path).is_dir():
+        yield from _load_rlds_trajectories(record_path, cameras)
+    else:
+        yield from _load_tfrecord_trajectories(record_path, cameras)
+
 def load_trajectory(
     record_path: str | Path,
     cameras: tuple[str, ...] = DEFAULT_CAMERAS,
     index: int = 0,
 ) -> Trajectory:
-    """Load a single episode (the `index`-th example) from the tfrecord."""
+    """Load a single episode (the `index`-th example) from `record_path`."""
     for i, trajectory in enumerate(load_trajectories(record_path, cameras)):
         if i == index:
             return trajectory
-    raise IndexError(f"tfrecord {record_path} has no example at index {index}")
+    raise IndexError(f"{record_path} has no example at index {index}")
