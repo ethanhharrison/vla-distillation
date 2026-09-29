@@ -7,6 +7,9 @@ from dataclasses import dataclass
 # USD per 1 million tokens, as (input_price, output_price).
 MODEL_PRICING: dict[str, tuple[float, float]] = {
     # OpenAI
+    "gpt-6-astra": (10.0, 50.0),
+    "gpt-6-sol": (2.0, 10.0),
+    "gpt-6-luna": (0.10, 0.50),
     "gpt-5.6-sol": (1.25, 10.0),
     "gpt-4o": (2.5, 10.0),
     "gpt-4o-mini": (0.15, 0.6),

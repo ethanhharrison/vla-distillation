@@ -84,6 +84,35 @@ def _shared_per_view_block(shared: dict, per_view: dict, cameras: list[str], tit
     """
 
 
+def _judge_block(verdict: dict | None) -> str:
+    """Rubric verdict (pipeline/dense_description/rubric.py) for the query, if graded."""
+    if not verdict:
+        return ""
+    from pipeline.dense_description.rubric import RUBRIC
+
+    rows = "".join(
+        f'<tr class="{"ok" if verdict["criteria"][c.id]["pass"] else "bad"}">'
+        f'<th>{"✓" if verdict["criteria"][c.id]["pass"] else "✗"} {html.escape(c.name)}</th>'
+        f'<td>{html.escape(verdict["criteria"][c.id]["reason"])}</td></tr>'
+        for c in RUBRIC if c.id in verdict["criteria"]
+    )
+    objects = ", ".join(
+        f'<span class="{"ok" if o.get("correct") else "bad"}">{html.escape(str(o.get("mentioned")))}'
+        + ("" if o.get("correct") else f' → {html.escape(str(o.get("actual")))}') + "</span>"
+        for o in verdict.get("objects", [])
+    )
+    status = "PASS" if verdict["pass"] else "FAIL"
+    return f"""
+    <div class="judge {'ok' if verdict['pass'] else 'bad'}">
+      <h5>Rubric verdict: <span class="verdict">{status}</span>
+        <span class="sub">judge {html.escape(str(verdict.get('judge_model')))} · {html.escape(str(verdict.get('judge_effort', '')))}</span></h5>
+      <p><b>What actually happens (judge):</b> {html.escape(verdict.get('ground_truth', ''))}</p>
+      <table>{rows}</table>
+      <p class="objects"><b>Objects named:</b> {objects}</p>
+    </div>
+    """
+
+
 def load_clip_images(
     record: str,
     example_index: int,
@@ -119,7 +148,15 @@ def render_query_video(run: dict, fps: float = 15.0) -> bytes:
         )
 
 
-def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path) -> str:
+def render_html(
+    result: dict,
+    examples_by_id: dict[str, dict],
+    source_path: Path,
+    query_images: dict[str, dict[str, bytes]] | None = None,
+    query_video: bytes | None = None,
+) -> str:
+    """`query_images` / `query_video` override loading the query clip from
+    its record (e.g. when re-rendering a run whose dataset isn't local)."""
     run = result["run"]
     cameras = run["cameras"]
     rotate_180 = frozenset(run.get("rotate_180_cameras", []))
@@ -145,11 +182,14 @@ def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path
         </section>
         """)
 
-    query_images = load_clip_images(
-        run["record"], run["example_index"], run["start_step"], run["end_step"],
-        tuple(cameras), rotate_180, contrast_factor,
-    )
-    video_b64 = base64.b64encode(render_query_video(run)).decode("ascii")
+    if query_images is None:
+        query_images = load_clip_images(
+            run["record"], run["example_index"], run["start_step"], run["end_step"],
+            tuple(cameras), rotate_180, contrast_factor,
+        )
+    if query_video is None:
+        query_video = render_query_video(run)
+    video_b64 = base64.b64encode(query_video).decode("ascii")
     instruction_note = (
         "shown to the model" if run.get("show_query_instruction", True)
         else "NOT shown to the model — for your reference only"
@@ -168,7 +208,8 @@ def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path
             <video controls loop muted playsinline src="data:video/mp4;base64,{video_b64}"></video>
           </div>
         </div>
-        <div class="col">{_shared_per_view_block(result['shared'], result['per_view'], cameras, "Model output")}</div>
+        <div class="col">{_shared_per_view_block(result['shared'], result['per_view'], cameras, "Model output")}
+          {_judge_block(result.get('judge'))}</div>
       </div>
     </section>
     """
@@ -185,6 +226,8 @@ def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path
             "prompt template": run.get("prompt_template", "default"),
             "query instruction shown to model": run.get("show_query_instruction", True),
             "few-shot examples": ", ".join(run["fewshot_example_ids"]),
+            # Only present for runs from batch_model_effort_sweep.py.
+            **{k: run[k] for k in ("reasoning_effort", "tokens", "latency_s", "cost_usd") if k in run},
         }.items()
     )
 
@@ -216,6 +259,11 @@ def render_html(result: dict, examples_by_id: dict[str, dict], source_path: Path
   video {{ width:100%; max-width:320px; border-radius:8px; display:block; background:#000; margin-top:4px; }}
   .answer h5 {{ margin:0 0 8px; color:#888; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }}
   .answer table.perview {{ margin-top:2px; }}
+  .judge {{ border:2px solid #8884; border-radius:8px; padding:10px 14px; margin-top:14px; }}
+  .judge.ok {{ border-color:#2e7d3288; }} .judge.bad {{ border-color:#c6282888; }}
+  .judge h5 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.03em; }}
+  .judge.ok .verdict, tr.ok th, span.ok {{ color:#2e7d32; }} .judge.bad .verdict, tr.bad th, span.bad {{ color:#c62828; }}
+  .judge p {{ margin:4px 0 8px; font-size:13px; }} .judge table th {{ width:38%; }}
   @media (max-width: 800px) {{ .body {{ grid-template-columns: 1fr; }} }}
 </style></head><body>
   <h1>Few-shot dense descriptions</h1>

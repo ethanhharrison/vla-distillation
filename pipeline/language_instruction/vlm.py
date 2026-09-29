@@ -110,6 +110,31 @@ class OpenAIVLM(VLM):
         )
         return response.choices[0].message.content or ""
 
+    def generate_chat(self, turns: list[ChatTurn]) -> str:
+        messages = []
+        for turn in turns:
+            content: list[dict] = []
+            if turn.text:
+                content.append({"type": "text", "text": turn.text})
+            for image in turn.images:
+                b64 = base64.b64encode(image).decode("ascii")
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            role = "assistant" if turn.role == "model" else turn.role
+            # Assistant turns are text-only in the chat-completions API.
+            messages.append({"role": role, "content": turn.text if role == "assistant" else content})
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            **self.extra,
+        )
+        usage = response.usage
+        self.usage.add(
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+        )
+        self.last_usage = usage.model_dump() if usage else {}
+        return response.choices[0].message.content or ""
+
 @register_vlm("qwen")
 class QwenVLM(OpenAIVLM):
     """Alibaba DashScope (Qwen) backend via the OpenAI-compatible API."""

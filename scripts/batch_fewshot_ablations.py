@@ -10,6 +10,10 @@ Named trials (override any via --trials to run a subset):
   prompt_motion_emphasis   - instructions that push for motion-only sentences
   prompt_compare_explicit  - instructions that ask for an explicit start/end compare first
 
+Each result is graded by a VLM judge against the correctness rubric in
+pipeline/dense_description/rubric.py (pass only if every criterion passes);
+the verdict is saved as "judge" in result.json and shown in the reports.
+
 Usage:
     python scripts/batch_fewshot_ablations.py \
         datasets/droid/success/success-00285.tfrecord
@@ -36,6 +40,14 @@ from pipeline.dense_description.generate_fewshot import (
     generate,
     load_labeled_examples,
 )
+from pipeline.dense_description.rubric import (
+    DEFAULT_JUDGE_EFFORT,
+    DEFAULT_JUDGE_MODEL,
+    DEFAULT_JUDGE_PROVIDER,
+    evidence_from_trajectory,
+    judge_description,
+)
+from pipeline.language_instruction.trajectory import load_trajectory
 from pipeline.language_instruction.vlm import build_vlm
 
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "dense_description_fewshot_ablations"
@@ -79,6 +91,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(default: the 2s switch clip and the 4s wipe clip already in fewshot_examples.yaml).",
     )
     parser.add_argument("--output", default=None, help="Batch directory (defaults under outputs/dense_description_fewshot_ablations/).")
+    parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL,
+                        help="Grades each result against pipeline/dense_description/rubric.py.")
+    parser.add_argument("--judge-effort", default=DEFAULT_JUDGE_EFFORT)
+    parser.add_argument("--no-judge", action="store_true", help="Skip rubric grading (not recommended).")
     return parser.parse_args(argv)
 
 
@@ -102,6 +118,7 @@ def run_one(
     clip_seconds: float,
     out_dir: Path,
     examples_by_id: dict[str, dict],
+    judge: tuple[str, str] | None = None,
 ) -> dict:
     config = FewshotConfig(
         record_path=record_path,
@@ -113,6 +130,8 @@ def run_one(
     )
     vlm = build_vlm(config.provider, model=config.model)
     result = generate(config, vlm=vlm)
+    if judge:
+        result["judge"] = judge_result(result, *judge)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "result.json"
@@ -120,12 +139,31 @@ def run_one(
     html_path = out_dir / "report.html"
     html_path.write_text(viz.render_html(result, examples_by_id, json_path))
 
+    verdict = result.get("judge")
     return {
+        "verdict": None if verdict is None else ("PASS" if verdict["pass"] else "FAIL: " + ", ".join(verdict["failed_criteria"])),
         "dir": out_dir.name,
         "trial": trial_name,
         "instruction": result["run"]["language_instruction"],
         "gripper_preview": result["shared"].get("gripper", "")[:140],
     }
+
+
+def judge_result(result: dict, judge_model: str, judge_effort: str) -> dict:
+    """Grade a generate() result against the correctness rubric; the judge
+    also sees intermediate frames and the (possibly hidden) instruction."""
+    run = result["run"]
+    cameras = run["cameras"]
+    stills = viz.load_clip_images(
+        run["record"], run["example_index"], run["start_step"], run["end_step"],
+        tuple(cameras), frozenset(run["rotate_180_cameras"]), run["contrast_factor"],
+    )
+    trajectory = load_trajectory(Path(run["record"]), tuple(cameras), run["example_index"])
+    evidence = evidence_from_trajectory(trajectory, run["start_step"], run["end_step"], cameras, stills)
+    judge_vlm = build_vlm(DEFAULT_JUDGE_PROVIDER, model=judge_model, reasoning_effort=judge_effort)
+    verdict = judge_description(judge_vlm, result["raw_response"], run["language_instruction"], evidence)
+    verdict["judge_effort"] = judge_effort
+    return verdict
 
 
 def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list[dict]) -> Path:
@@ -138,7 +176,10 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
     for trial_name, rows in rows_by_trial.items():
         cells = "".join(
             f'<td><a href="{html.escape(r["dir"])}/report.html">{html.escape(r["dir"])}</a>'
-            f'<div class="preview">{html.escape(r["gripper_preview"])}…</div></td>'
+            f'<div class="preview">{html.escape(r["gripper_preview"])}…</div>'
+            + (f'<div class="verdict {"ok" if r["verdict"] == "PASS" else "bad"}">{html.escape(r["verdict"])}</div>'
+               if r.get("verdict") else "")
+            + "</td>"
             for r in rows
         )
         sections.append(f"""
@@ -162,6 +203,8 @@ def write_index(batch_dir: Path, record_path: Path, queries: list, entries: list
   th {{ background: #8881; width: 220px; }}
   .blurb {{ font-weight: 400; font-size: 12px; color: #888; margin-top: 4px; }}
   .preview {{ font-size: 12px; color: #888; margin-top: 4px; }}
+  .verdict {{ font-size: 12px; font-weight: 700; margin-top: 4px; }}
+  .verdict.ok {{ color: #2e7d32; }} .verdict.bad {{ color: #c62828; }}
   a {{ font-weight: 600; }}
 </style></head><body>
   <h1>Few-shot dense-description ablations</h1>
@@ -198,6 +241,7 @@ def main(argv: list[str] | None = None) -> None:
                     record_path, args.provider, trial_name, overrides,
                     example_index, start_step, clip_seconds,
                     batch_dir / name, examples_by_id,
+                    None if args.no_judge else (args.judge_model, args.judge_effort),
                 )
             )
 
