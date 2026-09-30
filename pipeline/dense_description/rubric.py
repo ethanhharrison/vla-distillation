@@ -256,6 +256,7 @@ def judge_fewshot_result(result: dict, judge_model: str = DEFAULT_JUDGE_MODEL,
     from pipeline.language_instruction.vlm import build_vlm
 
     from .generate_fewshot import clip_images
+    from .prompts import format_fewshot_answer
 
     run = result["run"]
     cameras = run["cameras"]
@@ -266,6 +267,9 @@ def judge_fewshot_result(result: dict, judge_model: str = DEFAULT_JUDGE_MODEL,
     stills = {"start": dict(zip(cameras, flat[:n])), "end": dict(zip(cameras, flat[n:]))}
     evidence = evidence_from_trajectory(trajectory, run["start_step"], run["end_step"], cameras, stills)
     judge_vlm = build_vlm(DEFAULT_JUDGE_PROVIDER, model=judge_model, reasoning_effort=judge_effort)
-    verdict = judge_description(judge_vlm, result["raw_response"], run["language_instruction"], evidence)
+    # Grade the parsed answer (what would go into a dataset), not any
+    # scratch reasoning the model wrote before "Shared:".
+    description = format_fewshot_answer(result["shared"], result["per_view"], tuple(cameras))
+    verdict = judge_description(judge_vlm, description, run["language_instruction"], evidence)
     verdict["judge_effort"] = judge_effort
     return verdict

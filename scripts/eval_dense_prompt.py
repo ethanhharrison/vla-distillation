@@ -72,7 +72,9 @@ def register_prompt_file(path: Path, name: str) -> str:
     return name
 
 
-def run_clip(clip: dict, args: argparse.Namespace, template: str, out_dir: Path, examples_by_id: dict) -> dict:
+def run_clip(
+    clip: dict, args: argparse.Namespace, template: str, out_dir: Path, examples_by_id: dict, rep: int = 0,
+) -> dict:
     config = FewshotConfig(
         record_path=DATA_DIR / f"{clip['split']}.tfrecord",
         provider=args.provider,
@@ -87,9 +89,10 @@ def run_clip(clip: dict, args: argparse.Namespace, template: str, out_dir: Path,
     )
     result = generate(config, vlm=build_vlm_for_config(config))
     result["clip"] = {k: clip[k] for k in ("id", "split", "scene", "org", "event", "source")}
+    result["clip"]["run_id"] = clip["id"] if args.repeats == 1 else f'{clip["id"]}_r{rep}'
     if not args.no_judge:
         result["judge"] = judge_fewshot_result(result, args.judge_model, args.judge_effort)
-    clip_dir = out_dir / clip["id"]
+    clip_dir = out_dir / result["clip"]["run_id"]
     clip_dir.mkdir(parents=True, exist_ok=True)
     (clip_dir / "result.json").write_text(json.dumps(result, indent=2))
     (clip_dir / "report.html").write_text(viz.render_html(result, examples_by_id, clip_dir / "result.json"))
@@ -128,7 +131,7 @@ def summarize(results: list[dict]) -> dict:
 
 def write_index(out_dir: Path, results: list[dict], summary: dict, meta: dict) -> Path:
     rows = []
-    for r in sorted(results, key=lambda r: r["clip"]["id"]):
+    for r in sorted(results, key=lambda r: r["clip"]["run_id"]):
         v = r.get("judge")
         status = "—" if v is None else ("PASS" if v["pass"] else "FAIL")
         cls = "" if v is None else ("ok" if v["pass"] else "bad")
@@ -136,7 +139,7 @@ def write_index(out_dir: Path, results: list[dict], summary: dict, meta: dict) -
             f'<b>{html.escape(cid)}</b>: {html.escape(v["criteria"][cid]["reason"])}' for cid in v["failed_criteria"]
         )
         rows.append(
-            f'<tr class="{cls}"><td><a href="{r["clip"]["id"]}/report.html">{r["clip"]["id"]}</a></td>'
+            f'<tr class="{cls}"><td><a href="{r["clip"]["run_id"]}/report.html">{r["clip"]["run_id"]}</a></td>'
             f'<td>{html.escape(r["clip"]["scene"])}</td><td>{r["clip"]["event"]}</td>'
             f'<td>{html.escape(r["run"]["language_instruction"])}</td><td class="status">{status}</td>'
             f'<td class="why">{why}</td></tr>'
@@ -186,6 +189,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-judge", action="store_true")
     parser.add_argument("--limit", type=int, default=None, help="Only the first N clips of the split.")
     parser.add_argument("--clips", default=None, help="Comma-separated clip ids to run (e.g. to re-check failures).")
+    parser.add_argument("--repeats", type=int, default=1, help="Generate (and judge) each clip this many times.")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--output", default=None)
     return parser.parse_args(argv)
@@ -220,7 +224,10 @@ def main(argv: list[str] | None = None) -> None:
     results = []
     print(f"{len(clips)} {args.split} clips -> {out_dir}")
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(run_clip, c, args, template, out_dir, examples_by_id): c["id"] for c in clips}
+        futures = {
+            pool.submit(run_clip, c, args, template, out_dir, examples_by_id, rep): f'{c["id"]} r{rep}'
+            for c in clips for rep in range(args.repeats)
+        }
         for fut in as_completed(futures):
             try:
                 r = fut.result()

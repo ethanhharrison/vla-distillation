@@ -255,11 +255,64 @@ own framing - the same motion can look like "moves right" in one view and \
 Do not show your comparison step - only the final answer."""
 
 
+# Tuned on the dense_eval_v1 train split for gpt-6-luna (reasoning_effort=low)
+# against the correctness rubric: an explicit checklist the model answers in a
+# scratch "Observations:" section (stripped by parse_fewshot_response) before
+# the description. See outputs/dense_prompt_evals/luna_low_tuning/README.md.
+FEWSHOT_CHECKLIST_INSTRUCTIONS = """You are labeling a robot manipulation dataset.
+
+For each clip you will be shown the START and END camera frames (start frames first, then end frames, same camera order each time). The last camera (wrist_image) is mounted on the gripper, so its view moves with the gripper.
+
+Write your answer in exactly this format. First write a short "Observations:" section answering the seven checks below (one line each, numbered 1-7), then the description:
+
+Observations:
+1. <...>
+2. <...>
+3. <...>
+4. <...>
+5. <...>
+6. <...>
+7. <...>
+
+Shared:
+Gripper: <what the gripper does between START and END - what it holds, whether it grasps or releases, its overall movement>
+Scene change: <the net change in the scene between START and END - what moved, opened, closed, turned or was released, and where it ended up>
+Terminal gripper state: <the gripper at the END frame - open or closed, exactly what it is holding (or "empty"), and where it is>
+
+Per-view:
+{camera_labels}
+
+How to decide what happened - check these before writing:
+1. Wrist START frame: is an object already between the fingers? If yes, the gripper was already holding it - do not say it grasps or picks it up.
+2. Wrist END frame: are the fingers closed around an object, or open/empty? This decides the Terminal gripper state. Commit to one answer; do not write "open or closed" or "unclear".
+3. Is the object actually lifted at the END (clear gap below it), or still resting on a surface? A gripper near or touching an object has not necessarily grasped or moved it.
+4. Compare where each touched object is at START vs END in the shoulder views. Describe only the net change you can see. Never assume the task succeeded or will succeed - describe only what the END frames show.
+5. Look for changes to fixed parts: compare how far each door, drawer or lid is open at START vs END, and whether a knob or switch turned. A door that opened further counts as a change. State it.
+6. Which object is the gripper interacting with - the object between, touching, or directly under the fingers at END (or at START, if it let go)? Always name it, even if it was not grasped or moved.
+7. If the gripper holds an object at END, is the object tilted, or raised even slightly off its surface? Say so.
+
+Naming rules (a wrong name counts as an error):
+- Mention only objects that matter: the object the gripper handles and the surface or container it moves to or from. Leave out background objects.
+- Use the most specific name you are sure of. If unsure, use a plain generic name that is certainly true ("the white object", "the container", "the appliance", "the cloth") instead of guessing.
+- Name the surface an object rests on generically ("the surface", "the seat", "the shelf") unless you are sure what it is (a sofa is not a table; a stovetop is not a counter).
+- Only state a color, material, or printed text if it is clearly visible. Do not name a grasp point (handle, rim, knob) unless it is clearly visible.
+
+Per-view rules:
+- Each per-view line is ONE short sentence. It says where the gripper and the handled object are in THAT camera at the END, relative to the object it is interacting with or the nearest surface - not relative to distant furniture.
+- In the wrist view, the whole scene appears to shift because the camera moves with the gripper - do not describe that as objects moving.
+- Do not make claims about what is out of view or how much of the robot is visible.
+
+The Observations section is scratch work and will be removed; the description after "Shared:" must stand on its own and agree with your observations. The example answers you are shown omit Observations - always include it anyway.
+
+Style: short, concrete sentences. No bullet lists, no headers other than "Observations:", "Shared:" and "Per-view:"."""
+
+
 FEWSHOT_INSTRUCTION_TEMPLATES: dict[str, str] = {
     "default": FEWSHOT_DENSE_DESCRIPTION_INSTRUCTIONS,
     "terse": FEWSHOT_TERSE_INSTRUCTIONS,
     "motion_emphasis": FEWSHOT_MOTION_EMPHASIS_INSTRUCTIONS,
     "compare_explicit": FEWSHOT_COMPARE_EXPLICIT_INSTRUCTIONS,
+    "checklist": FEWSHOT_CHECKLIST_INSTRUCTIONS,
 }
 
 
