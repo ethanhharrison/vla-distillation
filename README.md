@@ -245,7 +245,7 @@ rubric in `pipeline/dense_description/rubric.py`. A description **passes only if
 every criterion passes**: object naming, manipulated object, final gripper
 state, final gripper position, final object positions/states, action fidelity,
 per-view consistency, and completeness/specificity. A VLM judge (default
-`gpt-6-astra`, `xhigh`) sees the start/end stills plus intermediate clip frames
+`gpt-6-luna`, `xhigh`) sees the start/end stills plus intermediate clip frames
 and the task instruction; its verdict is stored as `"judge"` in each result JSON
 and shown in the HTML reports. Re-grade an existing sweep with `--judge-only`;
 skip grading with `--no-judge`.

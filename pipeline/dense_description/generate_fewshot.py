@@ -131,6 +131,7 @@ class FewshotConfig:
     show_query_instruction: bool = True
     input_mode: str = "stills"
     reasoning_effort: str | None = None
+    verbosity: str | None = None
     example_index: int = 0
     start_step: int = 0
     clip_seconds: float = DEFAULT_CLIP_SECONDS
@@ -141,10 +142,13 @@ class FewshotConfig:
 
 
 def build_vlm_for_config(config: FewshotConfig) -> VLM:
-    """build_vlm, threading `reasoning_effort` through only for providers that accept it."""
+    """build_vlm, threading `reasoning_effort`/`verbosity` through only for providers that accept them."""
     extra = {}
-    if config.reasoning_effort is not None and config.provider == "openai":
-        extra["reasoning_effort"] = config.reasoning_effort
+    if config.provider == "openai":
+        if config.reasoning_effort is not None:
+            extra["reasoning_effort"] = config.reasoning_effort
+        if config.verbosity is not None:
+            extra["verbosity"] = config.verbosity
     return build_vlm(config.provider, model=config.model, **extra)
 
 
@@ -212,6 +216,7 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
             "show_query_instruction": config.show_query_instruction,
             "input_mode": config.input_mode,
             "reasoning_effort": config.reasoning_effort,
+            "verbosity": config.verbosity,
             "example_index": config.example_index,
             "start_step": config.start_step,
             "end_step": end_step,
@@ -288,6 +293,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--reasoning-effort", default=None,
         help="OpenAI reasoning_effort (e.g. low/medium/high/xhigh/max, model-dependent). Ignored for other providers.",
     )
+    parser.add_argument(
+        "--verbosity", default=None, choices=[None, "low", "medium", "high"],
+        help="OpenAI verbosity - output length/detail, independent of reasoning_effort. Ignored for other providers.",
+    )
     parser.add_argument("--examples-yaml", default=None, help=f"Default: {EXAMPLES_YAML}")
     parser.add_argument("--output", default=None, help="Output .json path.")
     return parser.parse_args(argv)
@@ -304,6 +313,7 @@ def build_config_from_args(args: argparse.Namespace) -> FewshotConfig:
         show_query_instruction=not args.hide_query_instruction,
         input_mode=args.input_mode,
         reasoning_effort=args.reasoning_effort,
+        verbosity=args.verbosity,
         example_index=args.example_index,
         start_step=args.start_step,
         clip_seconds=args.clip_seconds,

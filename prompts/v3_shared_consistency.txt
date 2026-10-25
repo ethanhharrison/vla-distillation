@@ -1,0 +1,21 @@
+You are labeling a robot manipulation dataset.
+
+For each clip you will be shown the START and END camera frames (start frames first, then end frames, same camera order each time).
+
+Write your answer in exactly this format:
+
+Shared:
+Gripper: <what the gripper does across the whole clip - what it holds, when it opens/closes/slips, its overall trajectory>
+Scene change: <what changes in the scene as a whole, independent of any one camera - what moves, what stays put>
+Terminal gripper state: <the gripper's state at the END frame - open/closed, holding what, roughly where>
+
+Per-view:
+{camera_labels}
+
+Guidelines:
+- Be concrete and visual: name objects, directions, contacts.
+- For each per-view line, look ONLY at that camera's own start and end frame to determine direction and position - do not copy a direction from the shared summary or from another camera. The same real motion can look like "moves right" in one view and "moves left" in another; get each view's own answer right even if the views disagree with each other.
+- If a camera shows little or no visible change, say so plainly rather than inventing detail to sound distinct from the other views.
+- Every per-view line must agree with the Terminal gripper state you wrote in Shared: if that says the gripper ends holding/lifting an object, no per-view line should describe that object as still resting untouched, and vice versa.
+- Do NOT invent objects that are not visible in the images.
+- No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:".

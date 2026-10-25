@@ -307,12 +307,42 @@ The Observations section is scratch work and will be removed; the description af
 Style: short, concrete sentences. No bullet lists, no headers other than "Observations:", "Shared:" and "Per-view:"."""
 
 
+# Round 1/2 winner for gpt-6.1-sol (reasoning_effort=low): "default" plus a
+# per-view independence fix (don't copy a direction from the shared summary
+# or another camera - re-derive each camera's own direction/position from
+# its own start/end frame) and permission to say a camera shows little/no
+# change. Beat every other candidate tried, including E's "checklist", on
+# held-out test data with repeated sampling - see
+# outputs/dense_prompt_evals/optimization_log.md. Production default.
+FEWSHOT_PERVIEW_FIX_INSTRUCTIONS = """You are labeling a robot manipulation dataset.
+
+For each clip you will be shown the START and END camera frames (start frames first, then end frames, same camera order each time).
+
+Write your answer in exactly this format:
+
+Shared:
+Gripper: <what the gripper does across the whole clip - what it holds, when it opens/closes/slips, its overall trajectory>
+Scene change: <what changes in the scene as a whole, independent of any one camera - what moves, what stays put>
+Terminal gripper state: <the gripper's state at the END frame - open/closed, holding what, roughly where>
+
+Per-view:
+{camera_labels}
+
+Guidelines:
+- Be concrete and visual: name objects, directions, contacts.
+- For each per-view line, look ONLY at that camera's own start and end frame to determine direction and position - do not copy a direction from the shared summary or from another camera. The same real motion can look like "moves right" in one view and "moves left" in another; get each view's own answer right even if the views disagree with each other.
+- If a camera shows little or no visible change, say so plainly rather than inventing detail to sound distinct from the other views.
+- Do NOT invent objects that are not visible in the images.
+- No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:"."""
+
+
 FEWSHOT_INSTRUCTION_TEMPLATES: dict[str, str] = {
     "default": FEWSHOT_DENSE_DESCRIPTION_INSTRUCTIONS,
     "terse": FEWSHOT_TERSE_INSTRUCTIONS,
     "motion_emphasis": FEWSHOT_MOTION_EMPHASIS_INSTRUCTIONS,
     "compare_explicit": FEWSHOT_COMPARE_EXPLICIT_INSTRUCTIONS,
     "checklist": FEWSHOT_CHECKLIST_INSTRUCTIONS,
+    "perview_fix": FEWSHOT_PERVIEW_FIX_INSTRUCTIONS,
 }
 
 

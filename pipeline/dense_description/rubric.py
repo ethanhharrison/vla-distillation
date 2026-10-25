@@ -25,7 +25,7 @@ from PIL import Image
 from pipeline.language_instruction.vlm import VLM, ChatTurn
 
 DEFAULT_JUDGE_PROVIDER = "openai"
-DEFAULT_JUDGE_MODEL = "gpt-6-astra"
+DEFAULT_JUDGE_MODEL = "gpt-6-luna"
 DEFAULT_JUDGE_EFFORT = "xhigh"
 
 

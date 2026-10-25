@@ -9,7 +9,7 @@ from that report, so they are byte-identical to what the original model saw
 fewshot_examples.yaml with the same contrast factor.
 
 Every generated description is graded against the correctness rubric in
-pipeline/dense_description/rubric.py by a VLM judge (default gpt-6-astra,
+pipeline/dense_description/rubric.py by a VLM judge (default gpt-6-luna,
 xhigh) that also sees intermediate clip frames and the task instruction;
 the verdict is stored under "judge" in each run's JSON. A description
 passes only if every rubric criterion passes.

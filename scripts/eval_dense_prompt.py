@@ -80,6 +80,7 @@ def run_clip(
         provider=args.provider,
         model=args.model,
         reasoning_effort=args.reasoning_effort,
+        verbosity=args.verbosity,
         prompt_template=template,
         contrast_factor=args.contrast,
         show_query_instruction=args.show_instruction,
@@ -182,6 +183,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--model", default="gpt-6-astra")
     parser.add_argument("--reasoning-effort", default="xhigh")
+    parser.add_argument("--verbosity", default=None, choices=[None, "low", "medium", "high"],
+                        help="OpenAI verbosity - output length/detail, independent of reasoning_effort.")
     parser.add_argument("--contrast", type=float, default=1.5)
     parser.add_argument("--show-instruction", action="store_true", help="Show the query's instruction (default: hidden).")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
@@ -240,6 +243,7 @@ def main(argv: list[str] | None = None) -> None:
 
     summary = summarize(results)
     meta = {"split": args.split, "prompt": name, "model": args.model, "reasoning_effort": args.reasoning_effort,
+            "verbosity": args.verbosity or "unset (API default)",
             "contrast": args.contrast, "instruction shown": args.show_instruction,
             "judge": "off" if args.no_judge else f"{args.judge_model} {args.judge_effort}",
             "generation cost": f'${summary["generation_cost_usd"]:.2f}',

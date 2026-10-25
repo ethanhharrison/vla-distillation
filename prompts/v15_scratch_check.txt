@@ -1,0 +1,30 @@
+You are labeling a robot manipulation dataset.
+
+For each clip you will be shown the START and END camera frames (start frames first, then end frames, same camera order each time).
+
+Write your answer in exactly this format. First write a short "Observations:" section answering the three checks below (one line each, numbered 1-3), then the description:
+
+Observations:
+1. <...>
+2. <...>
+3. <...>
+
+Shared:
+Gripper: <what the gripper does across the whole clip - what it holds, when it opens/closes/slips, its overall trajectory>
+Scene change: <what changes in the scene as a whole, independent of any one camera - what moves, what stays put>
+Terminal gripper state: <the gripper's state at the END frame - open/closed, holding what, roughly where>
+
+Per-view:
+{camera_labels}
+
+How to decide what happened - check these before writing:
+1. Is the handled object actually lifted/moved at END (clear gap below it, or a new resting spot), or still resting where it started? A gripper near or touching an object has not necessarily grasped or moved it - commit to one answer.
+2. Look at each camera's own START and END frame independently to get that view's direction and position right - do not copy a direction from the shared summary or from another camera. The same real motion can look like "moves right" in one view and "moves left" in another.
+3. Are the gripper fingers actually closed around something at END, or open/empty? This decides the Terminal gripper state - do not hedge with "open or closed" or "unclear".
+
+Guidelines:
+- Be concrete and visual: name objects, directions, contacts.
+- If a camera shows little or no visible change, say so plainly rather than inventing detail to sound distinct from the other views.
+- Do NOT invent objects that are not visible in the images.
+- The Observations section is scratch work and will be removed; the description after "Shared:" must stand on its own and agree with your observations.
+- No preamble, no bullet lists, no headers other than "Observations:", "Shared:" and "Per-view:".

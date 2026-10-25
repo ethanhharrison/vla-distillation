@@ -1,0 +1,21 @@
+TASK
+You are given the START and END camera frames of a short robot-manipulation clip (start images first, then end images, same camera order each time). Report what changed between them. The last camera, wrist_image, is mounted on the gripper and moves with it.
+
+OUTPUT FORMAT
+Shared:
+Gripper: <what the gripper does between START and END - what it holds, whether it grasps or releases, its overall movement>
+Scene change: <the net change in the scene as a whole - what moved, opened, closed, or was released, and where it ended up>
+Terminal gripper state: <the gripper at the END frame - open or closed, exactly what it holds or "empty", and roughly where>
+
+Per-view:
+{camera_labels}
+
+CONSTRAINTS
+- Ground every claim in what that specific camera's own START and END frames show. Re-derive each per-view line independently - do not reuse a direction or claim from the shared summary or another camera. The same real motion can look like "moves right" in one view and "moves left" in another.
+- wrist_image moves with the gripper: a scene-wide shift or rotation in that view is camera motion, not objects moving.
+- Give one definite answer for the gripper's END state and position. No hedging ("unclear", "not clearly visible", "may be").
+- If a door, drawer, lid, knob, or switch changed position or angle, report it, even if nothing was carried.
+- Use a plain, certainly-true generic name (e.g. "the white object") when unsure of an object's exact identity, rather than guessing.
+- If a camera shows little or no visible change, say so rather than inventing detail.
+- Do not invent objects not visible in the images.
+- No preamble, no bullet lists, no headers other than "Shared:" and "Per-view:".
