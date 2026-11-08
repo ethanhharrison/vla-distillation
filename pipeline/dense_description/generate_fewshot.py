@@ -137,6 +137,10 @@ class FewshotConfig:
     clip_seconds: float = DEFAULT_CLIP_SECONDS
     fps: float = DROID_FPS
     language_instruction: str | None = None
+    # Optional privileged robot-state text (e.g. a cartesian delta), appended
+    # to the query clip's header. Not sent with the few-shot examples - this
+    # is a query-time-only ablation knob. See prompts.py's PRIVILEGED_STATE_*.
+    privileged_state_text: str | None = None
     examples_yaml: Path = EXAMPLES_YAML
     output_dir: Path | None = None
 
@@ -183,7 +187,10 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
         total=trajectory.length,
         clip_seconds=config.clip_seconds,
         include_instruction=config.show_query_instruction,
-    ) + " Now write your answer in the format above."
+    )
+    if config.privileged_state_text:
+        query_header += " " + config.privileged_state_text
+    query_header += " Now write your answer in the format above."
     if config.input_mode == "video":
         video = clip_video(trajectory, config.start_step, end_step, config.cameras, config.rotate_180_cameras, config.fps)
         turns.append(ChatTurn(role="user", text=query_header, video=video))
@@ -214,6 +221,7 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
             "contrast_factor": config.contrast_factor,
             "prompt_template": config.prompt_template,
             "show_query_instruction": config.show_query_instruction,
+            "privileged_state_text": config.privileged_state_text,
             "input_mode": config.input_mode,
             "reasoning_effort": config.reasoning_effort,
             "verbosity": config.verbosity,
