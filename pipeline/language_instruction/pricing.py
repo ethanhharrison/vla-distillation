@@ -17,6 +17,8 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.15, 0.6),
     # Google Gemini
     "gemini-robotics-er-2-preview": (2.0, 10.0),
+    # Introductory rate through 2026-11-30; $4 / $20 from 2026-12-01.
+    "gemini-4-argon": (2.0, 10.0),
     "gemini-3.6-flash": (0.30, 2.50),
     "gemini-3.5-flash-lite": (0.10, 0.40),
     "gemini-3.1-flash-lite": (0.10, 0.40),

@@ -190,6 +190,14 @@ class QwenVLM(OpenAIVLM):
         )
         self.extra = kwargs
 
+def _gemini_output_tokens(meta) -> int:
+    """Billed output tokens: visible candidates plus hidden thinking tokens
+    (thinking models such as gemini-robotics-er-2 bill thoughts as output)."""
+    if not meta:
+        return 0
+    return (meta.candidates_token_count or 0) + (getattr(meta, "thoughts_token_count", None) or 0)
+
+
 @register_vlm("gemini")
 class GeminiVLM(VLM):
     """Google Gemini backend via the `google-genai` SDK."""
@@ -212,7 +220,7 @@ class GeminiVLM(VLM):
         meta = response.usage_metadata
         self.usage.add(
             input_tokens=meta.prompt_token_count if meta else 0,
-            output_tokens=meta.candidates_token_count if meta else 0,
+            output_tokens=_gemini_output_tokens(meta),
         )
         return response.text or ""
 
@@ -229,7 +237,7 @@ class GeminiVLM(VLM):
         meta = response.usage_metadata
         self.usage.add(
             input_tokens=meta.prompt_token_count if meta else 0,
-            output_tokens=meta.candidates_token_count if meta else 0,
+            output_tokens=_gemini_output_tokens(meta),
         )
         return response.text or ""
 
@@ -252,7 +260,7 @@ class GeminiVLM(VLM):
         meta = response.usage_metadata
         self.usage.add(
             input_tokens=meta.prompt_token_count if meta else 0,
-            output_tokens=meta.candidates_token_count if meta else 0,
+            output_tokens=_gemini_output_tokens(meta),
         )
         return response.text or ""
 

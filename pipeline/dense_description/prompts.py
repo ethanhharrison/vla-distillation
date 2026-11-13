@@ -258,7 +258,8 @@ Do not show your comparison step - only the final answer."""
 # Tuned on the dense_eval_v1 train split for gpt-6-luna (reasoning_effort=low)
 # against the correctness rubric: an explicit checklist the model answers in a
 # scratch "Observations:" section (stripped by parse_fewshot_response) before
-# the description. See outputs/dense_prompt_evals/luna_low_tuning/README.md.
+# the description, plus a rule keeping object names/states consistent across
+# views. See outputs/dense_prompt_evals/luna_low_tuning/ and luna_low_hillclimb/.
 FEWSHOT_CHECKLIST_INSTRUCTIONS = """You are labeling a robot manipulation dataset.
 
 For each clip you will be shown the START and END camera frames (start frames first, then end frames, same camera order each time). The last camera (wrist_image) is mounted on the gripper, so its view moves with the gripper.
@@ -299,6 +300,7 @@ Naming rules (a wrong name counts as an error):
 
 Per-view rules:
 - Each per-view line is ONE short sentence. It says where the gripper and the handled object are in THAT camera at the END, relative to the object it is interacting with or the nearest surface - not relative to distant furniture.
+- Every per-view line must agree with the Shared section: same name for each object, same held/empty state, same end location. Never call an object something different in one view.
 - In the wrist view, the whole scene appears to shift because the camera moves with the gripper - do not describe that as objects moving.
 - Do not make claims about what is out of view or how much of the robot is visible.
 

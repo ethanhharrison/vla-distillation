@@ -72,6 +72,17 @@ def register_prompt_file(path: Path, name: str) -> str:
     return name
 
 
+def rejudge_result(path: Path, args: argparse.Namespace, out_dir: Path, examples_by_id: dict) -> dict:
+    result = json.loads(path.read_text())
+    result.pop("judge", None)
+    result["judge"] = judge_fewshot_result(result, args.judge_model, args.judge_effort)
+    clip_dir = out_dir / result["clip"]["run_id"]
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    (clip_dir / "result.json").write_text(json.dumps(result, indent=2))
+    (clip_dir / "report.html").write_text(viz.render_html(result, examples_by_id, clip_dir / "result.json"))
+    return result
+
+
 def run_clip(
     clip: dict, args: argparse.Namespace, template: str, out_dir: Path, examples_by_id: dict, rep: int = 0,
 ) -> dict:
@@ -87,6 +98,7 @@ def run_clip(
         example_index=clip["example_index"],
         start_step=clip["start_step"],
         clip_seconds=clip["clip_seconds"],
+        num_examples=args.num_examples,
     )
     result = generate(config, vlm=build_vlm_for_config(config))
     result["clip"] = {k: clip[k] for k in ("id", "split", "scene", "org", "event", "source")}
@@ -100,7 +112,14 @@ def run_clip(
     return result
 
 
-def summarize(results: list[dict]) -> dict:
+def _n_passed(result: dict) -> int:
+    """Rubric criteria this description passes (verdicts from before the
+    count was stored are recomputed from failed_criteria)."""
+    v = result["judge"]
+    return v.get("criteria_passed", len(RUBRIC) - len(v["failed_criteria"]))
+
+
+def summarize(results: list[dict], include_generation_cost: bool = True) -> dict:
     judged = [r for r in results if r.get("judge")]
     fails = Counter(cid for r in judged for cid in r["judge"]["failed_criteria"])
 
@@ -108,10 +127,13 @@ def summarize(results: list[dict]) -> dict:
         out = {}
         for key in sorted({r["clip"][group_key] for r in judged}):
             grp = [r for r in judged if r["clip"][group_key] == key]
-            out[key] = f'{sum(r["judge"]["pass"] for r in grp)}/{len(grp)}'
+            mean = sum(_n_passed(r) for r in grp) / len(grp)
+            out[key] = f'{sum(r["judge"]["pass"] for r in grp)}/{len(grp)} pass, {mean:.2f}/{len(RUBRIC)} criteria'
         return out
 
-    gen_cost = sum((r["run"].get("cost") or {}).get("total_cost_usd") or 0.0 for r in results)
+    n = len(judged)
+
+    gen_cost = sum((r["run"].get("cost") or {}).get("total_cost_usd") or 0.0 for r in results) if include_generation_cost else 0.0
     judge_cost = 0.0
     for r in judged:
         u = r["judge"].get("judge_usage") or {}
@@ -122,6 +144,10 @@ def summarize(results: list[dict]) -> dict:
         "judged": len(judged),
         "pass": sum(r["judge"]["pass"] for r in judged),
         "pass_rate": round(sum(r["judge"]["pass"] for r in judged) / len(judged), 3) if judged else None,
+        "mean_criteria_passed": round(sum(_n_passed(r) for r in judged) / n, 3) if n else None,
+        "criteria_total": len(RUBRIC),
+        "criterion_pass_rate": {c.id: round(1 - fails.get(c.id, 0) / n, 3) if n else None for c in RUBRIC},
+        "criteria_passed_histogram": dict(sorted(Counter(_n_passed(r) for r in judged).items())),
         "failures_by_criterion": {c.id: fails.get(c.id, 0) for c in RUBRIC},
         "pass_by_event": rate("event"),
         "pass_by_scene": rate("scene"),
@@ -134,7 +160,7 @@ def write_index(out_dir: Path, results: list[dict], summary: dict, meta: dict) -
     rows = []
     for r in sorted(results, key=lambda r: r["clip"]["run_id"]):
         v = r.get("judge")
-        status = "—" if v is None else ("PASS" if v["pass"] else "FAIL")
+        status = "—" if v is None else ("PASS" if v["pass"] else "FAIL") + f" {_n_passed(r)}/{len(RUBRIC)}"
         cls = "" if v is None else ("ok" if v["pass"] else "bad")
         why = "" if not v or v["pass"] else "<br>".join(
             f'<b>{html.escape(cid)}</b>: {html.escape(v["criteria"][cid]["reason"])}' for cid in v["failed_criteria"]
@@ -145,7 +171,10 @@ def write_index(out_dir: Path, results: list[dict], summary: dict, meta: dict) -
             f'<td>{html.escape(r["run"]["language_instruction"])}</td><td class="status">{status}</td>'
             f'<td class="why">{why}</td></tr>'
         )
-    crit = "".join(f"<li>{k}: {n}</li>" for k, n in summary["failures_by_criterion"].items())
+    crit = "".join(
+        f"<li>{k}: passes {summary['criterion_pass_rate'][k]:.0%} ({n} failures)</li>"
+        for k, n in summary["failures_by_criterion"].items()
+    )
     meta_rows = "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(v))}</td></tr>" for k, v in meta.items())
     out = out_dir / "index.html"
     out.write_text(f"""<!DOCTYPE html>
@@ -161,9 +190,10 @@ def write_index(out_dir: Path, results: list[dict], summary: dict, meta: dict) -
   td.why {{ font-size: 12px; }} .big {{ font-size: 28px; font-weight: 700; }}
 </style></head><body>
   <h1>Dense prompt eval — {html.escape(meta["split"])} split</h1>
-  <p class="big">{summary["pass"]}/{summary["judged"]} pass</p>
+  <p class="big">{summary["pass"]}/{summary["judged"]} pass all criteria ·
+    mean {summary["mean_criteria_passed"]:.2f}/{summary["criteria_total"]} criteria passed</p>
   <table>{meta_rows}</table>
-  <p><b>Failures by criterion:</b></p><ul>{crit}</ul>
+  <p><b>By criterion:</b></p><ul>{crit}</ul>
   <p><b>Pass by event:</b> {html.escape(json.dumps(summary["pass_by_event"]))}<br>
      <b>Pass by scene:</b> {html.escape(json.dumps(summary["pass_by_scene"]))}</p>
   <table><tr><th>clip</th><th>scene</th><th>event</th><th>instruction (hidden from model)</th><th>verdict</th><th>why</th></tr>
@@ -186,10 +216,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--verbosity", default=None, choices=[None, "low", "medium", "high"],
                         help="OpenAI verbosity - output length/detail, independent of reasoning_effort.")
     parser.add_argument("--contrast", type=float, default=1.5)
+    parser.add_argument("--num-examples", type=int, default=None,
+                        help="Use only the first N few-shot examples (0 = zero-shot). Default: all.")
     parser.add_argument("--show-instruction", action="store_true", help="Show the query's instruction (default: hidden).")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
     parser.add_argument("--judge-effort", default=DEFAULT_JUDGE_EFFORT)
     parser.add_argument("--no-judge", action="store_true")
+    parser.add_argument(
+        "--rejudge-from", default=None,
+        help="Don't generate: re-grade the descriptions in an earlier eval output dir with the current judge settings.",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Only the first N clips of the split.")
     parser.add_argument("--clips", default=None, help="Comma-separated clip ids to run (e.g. to re-check failures).")
     parser.add_argument("--repeats", type=int, default=1, help="Generate (and judge) each clip this many times.")
@@ -221,16 +257,24 @@ def main(argv: list[str] | None = None) -> None:
         DEFAULT_OUTPUT_DIR / f"{args.split}_{name}_{args.model}_{args.reasoning_effort}_{datetime.now():%Y%m%d-%H%M%S}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "prompt.txt").write_text(FEWSHOT_INSTRUCTION_TEMPLATES[template])
+    if args.rejudge_from:
+        (out_dir / "prompt.txt").write_text((Path(args.rejudge_from) / "prompt.txt").read_text())
+    else:
+        (out_dir / "prompt.txt").write_text(FEWSHOT_INSTRUCTION_TEMPLATES[template])
     examples_by_id = {ex["id"]: ex for ex in load_labeled_examples(EXAMPLES_YAML)}
 
     results = []
-    print(f"{len(clips)} {args.split} clips -> {out_dir}")
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {
-            pool.submit(run_clip, c, args, template, out_dir, examples_by_id, rep): f'{c["id"]} r{rep}'
-            for c in clips for rep in range(args.repeats)
-        }
+        if args.rejudge_from:
+            paths = sorted(Path(args.rejudge_from).glob("*/result.json"))
+            print(f"re-judging {len(paths)} descriptions from {args.rejudge_from} -> {out_dir}")
+            futures = {pool.submit(rejudge_result, p, args, out_dir, examples_by_id): p.parent.name for p in paths}
+        else:
+            print(f"{len(clips)} {args.split} clips -> {out_dir}")
+            futures = {
+                pool.submit(run_clip, c, args, template, out_dir, examples_by_id, rep): f'{c["id"]} r{rep}'
+                for c in clips for rep in range(args.repeats)
+            }
         for fut in as_completed(futures):
             try:
                 r = fut.result()
@@ -241,10 +285,11 @@ def main(argv: list[str] | None = None) -> None:
             except Exception as ex:  # noqa: BLE001 - keep going; one bad clip shouldn't sink the run
                 print(f"{futures[fut]}: ERROR {ex}", flush=True)
 
-    summary = summarize(results)
+    summary = summarize(results, include_generation_cost=not args.rejudge_from)
     meta = {"split": args.split, "prompt": name, "model": args.model, "reasoning_effort": args.reasoning_effort,
             "verbosity": args.verbosity or "unset (API default)",
             "contrast": args.contrast, "instruction shown": args.show_instruction,
+            "few-shot examples": "all" if args.num_examples is None else args.num_examples,
             "judge": "off" if args.no_judge else f"{args.judge_model} {args.judge_effort}",
             "generation cost": f'${summary["generation_cost_usd"]:.2f}',
             "judge cost (approx)": f'${summary["judge_cost_usd_approx"]:.2f}'}

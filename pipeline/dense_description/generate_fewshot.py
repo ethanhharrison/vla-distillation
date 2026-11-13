@@ -142,6 +142,7 @@ class FewshotConfig:
     # is a query-time-only ablation knob. See prompts.py's PRIVILEGED_STATE_*.
     privileged_state_text: str | None = None
     examples_yaml: Path = EXAMPLES_YAML
+    num_examples: int | None = None  # use only the first N labeled examples (0 = zero-shot); None = all
     output_dir: Path | None = None
 
 
@@ -163,8 +164,10 @@ def generate(config: FewshotConfig, vlm: VLM | None = None) -> dict:
         vlm = build_vlm_for_config(config)
 
     labeled = load_labeled_examples(config.examples_yaml)
-    if not labeled:
+    if not labeled and config.num_examples != 0:
         raise ValueError(f"No labeled few-shot examples found in {config.examples_yaml}")
+    if config.num_examples is not None:
+        labeled = labeled[: config.num_examples]
 
     turns: list[ChatTurn] = [
         ChatTurn(role="user", text=fewshot_instructions(config.cameras, config.prompt_template))

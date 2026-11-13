@@ -169,6 +169,8 @@ def parse_judge_response(text: str) -> dict:
     failed = [cid for cid, v in criteria.items() if not v["pass"]]
     return {
         "pass": not failed,
+        "criteria_passed": len(RUBRIC) - len(failed),
+        "criteria_total": len(RUBRIC),
         "failed_criteria": failed,
         "criteria": criteria,
         "objects": data.get("objects") or [],
